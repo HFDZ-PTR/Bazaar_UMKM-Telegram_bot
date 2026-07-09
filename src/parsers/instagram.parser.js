@@ -1,4 +1,5 @@
 const cheerio = require("cheerio");
+const { extractEventDateFromText } = require("../utils/date");
 
 // --- Location keywords (Indonesian + common venues) ---
 const LOCATION_PATTERNS = [
@@ -15,21 +16,6 @@ const LOCATION_STOP_PATTERNS = [
   /\s{2,}.*/,
   /\s+[•\-–—]\s+.*$/,
 ];
-
-const MONTH_ID = {
-  januari: "01",
-  februari: "02",
-  maret: "03",
-  april: "04",
-  mei: "05",
-  juni: "06",
-  juli: "07",
-  agustus: "08",
-  september: "09",
-  oktober: "10",
-  november: "11",
-  desember: "12",
-};
 
 function extractLocation(text) {
   const lines = String(text || "")
@@ -60,30 +46,7 @@ function extractLocation(text) {
 }
 
 function extractEventDate(text) {
-  const idMatch = text.match(
-    /(\d{1,2})\s+(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)\s+(\d{4})/i,
-  );
-  if (idMatch) {
-    const day = idMatch[1].padStart(2, "0");
-    const month = MONTH_ID[idMatch[2].toLowerCase()];
-    const year = idMatch[3];
-    return `${year}-${month}-${day}`;
-  }
-
-  const dmyMatch = text.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-  if (dmyMatch) {
-    const day = dmyMatch[1].padStart(2, "0");
-    const month = dmyMatch[2].padStart(2, "0");
-    const year = dmyMatch[3];
-    return `${year}-${month}-${day}`;
-  }
-
-  const isoMatch = text.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (isoMatch) {
-    return isoMatch[0];
-  }
-
-  return new Date().toISOString().slice(0, 10);
+  return extractEventDateFromText(text);
 }
 
 function parseInstagramPost(href, caption, imgSrc) {
@@ -101,7 +64,10 @@ function parseInstagramPost(href, caption, imgSrc) {
     platform: "instagram",
     postId,
     title,
-    date: extractEventDate(normalizedCaption),
+    date:
+      extractEventDate(normalizedCaption) ||
+      new Date().toISOString().slice(0, 10),
+    eventDate: extractEventDate(normalizedCaption),
     location: extractLocation(normalizedCaption),
     organizer: "",
     description,

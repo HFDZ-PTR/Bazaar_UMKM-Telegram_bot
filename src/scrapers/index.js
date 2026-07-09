@@ -5,6 +5,7 @@ const dedupService = require("../services/dedup.service");
 const telegramService = require("../services/telegram.service");
 const { eventSchema } = require("../config");
 const { scrapeInstagram } = require("./instagram.scraper");
+const { scrapeTikTok } = require("./tiktok.scraper");
 
 async function processEvent(event) {
   const result = eventSchema.safeParse(event);
@@ -33,7 +34,7 @@ async function processEvent(event) {
   const filePath = await appendEvent(validatedEvent);
   logger.info(
     `[OK] saved [${validatedEvent.platform}] ${validatedEvent.postId.slice(0, 12)}` +
-      ` | date ${validatedEvent.date}` +
+      ` | date ${validatedEvent.eventDate || validatedEvent.date}` +
       ` | location ${validatedEvent.location || "(no location)"}` +
       ` -> ${filePath.split(/[\\/]/).slice(-2).join("/")}`,
   );
@@ -64,6 +65,7 @@ async function runScraper(scraperName, scraper) {
 async function runAllScrapers() {
   await dedupService.init();
   await runScraper("instagram", scrapeInstagram);
+  await runScraper("tiktok", scrapeTikTok);
 }
 
 module.exports = { runAllScrapers };

@@ -15,7 +15,7 @@ const dedupService = require("../services/dedup.service");
 const logger = require("../utils/logger");
 
 const CONFIGURATION = {
-  baseUrl: "https://www.instagram.com/explore/tags/",
+  baseUrl: "https://www.instagram.com/explore/",
   postBaseUrl: "https://www.instagram.com",
   minCaptionLength: 30,
   maxDetailFetchesPerHashtag: 3,

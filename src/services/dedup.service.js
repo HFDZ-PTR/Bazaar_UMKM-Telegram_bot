@@ -29,6 +29,20 @@ class DedupService {
     return true;
   }
 
+  async syncFromEvents(events) {
+    const fingerprints = Array.from(
+      new Set(
+        (Array.isArray(events) ? events : [])
+          .filter((event) => event?.platform && event?.postId)
+          .map((event) => createFingerprint(event.platform, event.postId)),
+      ),
+    );
+
+    this.seen = new Set(fingerprints);
+    this.ready = true;
+    await writeJSON(CONFIG.seenIdsPath, fingerprints);
+  }
+
   has(platform, postId) {
     const fingerprint = createFingerprint(platform, postId);
     return this.seen.has(fingerprint);

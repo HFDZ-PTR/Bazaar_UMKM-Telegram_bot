@@ -1,27 +1,49 @@
 const logger = require("./utils/logger");
 const { CONFIG } = require("./config");
-const { runAllScrapers } = require("./scrapers");
-const { closeBrowser } = require("./services/browser.service");
+const app = require("./api/server");
+const botService = require("./services/bot.service");
 
-async function runCycle() {
-  try {
-    await runAllScrapers();
-  } finally {
-    await closeBrowser();
+let server;
+
+async function shutdown(signal) {
+  logger.info({ signal }, "shutting down application");
+
+  if (server) {
+    await new Promise((resolve) => server.close(resolve));
+    server = null;
   }
+
+  await botService.stop();
 }
 
 async function start() {
   logger.info(
-    { intervalHours: CONFIG.scrapeIntervalHours },
-    "starting umkm-bazaar-bot",
+    {
+      port: CONFIG.port,
+      runBotWithApi: CONFIG.runBotWithApi,
+      scrapeIntervalHours: CONFIG.scrapeIntervalHours,
+    },
+    "starting umkm-bazaar-bot api",
   );
 
-  await runCycle();
+  server = await app.start();
+
+  if (CONFIG.runBotWithApi) {
+    void botService.start().catch((error) => {
+      logger.error({ err: error }, "bot worker failed during combined startup");
+    });
+  }
+
+  process.once("SIGINT", () => {
+    void shutdown("SIGINT").finally(() => process.exit(0));
+  });
+
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM").finally(() => process.exit(0));
+  });
 }
 
-start().catch(async (error) => {
+start().catch((error) => {
   logger.error({ error }, "application startup failed");
-  await closeBrowser();
   process.exit(1);
 });

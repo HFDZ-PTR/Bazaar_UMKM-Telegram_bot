@@ -22,10 +22,11 @@ function escapeMarkdown(text = "") {
 }
 
 function formatEventMessage(event) {
+  const eventDate = event.eventDate || event.date || "";
   const lines = [
     `*${escapeMarkdown(event.title)}*`,
     `Platform: ${escapeMarkdown(event.platform)}`,
-    `Date: ${escapeMarkdown(event.date)}`,
+    `Date: ${escapeMarkdown(eventDate)}`,
   ];
 
   if (event.location) {

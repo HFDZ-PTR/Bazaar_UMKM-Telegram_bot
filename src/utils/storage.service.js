@@ -1,9 +1,20 @@
 const fs = require("fs").promises;
 const path = require("path");
 const { CONFIG } = require("../config");
+const { createFingerprint } = require("./fingerprint");
+const { toIsoDateString, parseEventDateString } = require("./date");
 
 async function ensureDirectory(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
+}
+
+async function listEventFiles() {
+  await fs.mkdir(CONFIG.eventsDir, { recursive: true });
+
+  const entries = await fs.readdir(CONFIG.eventsDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => path.join(CONFIG.eventsDir, entry.name));
 }
 
 async function ensureFile(filePath, defaultValue) {
@@ -29,11 +40,31 @@ async function writeJSON(filePath, data) {
   await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf8");
 }
 
+function normalizeEventRecord(event) {
+  const now = new Date().toISOString();
+  const eventDate =
+    typeof event.eventDate === "string" ? event.eventDate : null;
+  const parsedEventDate = parseEventDateString(eventDate);
+  const normalizedEventDate = parsedEventDate
+    ? toIsoDateString(parsedEventDate)
+    : null;
+
+  return {
+    ...event,
+    id: event.id || createFingerprint(event.platform, event.postId),
+    eventDate: normalizedEventDate,
+    date: event.date || normalizedEventDate || toIsoDateString(new Date()),
+    scrapedAt: event.scrapedAt || now,
+    createdAt: event.createdAt || now,
+  };
+}
+
 async function appendEvent(event) {
-  const dateKey = event.date || new Date().toISOString().slice(0, 10);
+  const normalizedEvent = normalizeEventRecord(event);
+  const dateKey = normalizedEvent.eventDate || toIsoDateString(new Date());
   const filePath = path.join(CONFIG.eventsDir, `${dateKey}.json`);
   const existingEvents = await readJSON(filePath, []);
-  existingEvents.push(event);
+  existingEvents.push(normalizedEvent);
   await writeJSON(filePath, existingEvents);
   return filePath;
 }
@@ -52,6 +83,8 @@ module.exports = {
   ensureFile,
   readJSON,
   writeJSON,
+  listEventFiles,
+  normalizeEventRecord,
   appendEvent,
   appendError,
 };

@@ -4,7 +4,7 @@ const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 const DEFAULT_HASHTAGS = {
   instagram: ["bazarumkm", "umkmjakarta", "bazarjakarta"],
-  twitter: ["bazarUMKM", "umkmjakarta"],
+  tiktok: ["bazarumkm", "umkmjakarta", "bazarjakarta"],
 };
 
 const HUMAN_DELAY_MIN_MS = 1000;

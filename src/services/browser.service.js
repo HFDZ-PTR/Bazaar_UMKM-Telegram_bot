@@ -89,17 +89,8 @@ function getEnvCookies(platform) {
     ];
   }
 
-  if (platform === "twitter") {
-    const authTokenCookie = buildSessionCookie(
-      "auth_token",
-      CONFIG.twitterAuthToken,
-      ".x.com",
-    );
-
-    return [
-      ...parseCookieJson(CONFIG.twitterCookieJson),
-      ...(authTokenCookie ? [authTokenCookie] : []),
-    ];
+  if (platform === "tiktok") {
+    return [];
   }
 
   return [];
@@ -114,7 +105,7 @@ async function loadCookies(page, platform) {
   const cookiePath =
     platform === "instagram"
       ? CONFIG.instagramCookiesPath
-      : CONFIG.twitterCookiesPath;
+      : CONFIG.tiktokCookiesPath;
   const envCookies = getEnvCookies(platform);
   const fileCookies = await readCookies(cookiePath);
   const cookies = [...envCookies, ...fileCookies];
@@ -127,7 +118,7 @@ async function saveCookies(page, platform) {
   const cookiePath =
     platform === "instagram"
       ? CONFIG.instagramCookiesPath
-      : CONFIG.twitterCookiesPath;
+      : CONFIG.tiktokCookiesPath;
   const cookies = await page.cookies();
   await writeCookies(cookiePath, cookies);
 }
@@ -206,13 +197,6 @@ function isLoginPage(platform, currentUrl) {
     return currentUrl.includes("instagram.com/accounts/login");
   }
 
-  if (platform === "twitter") {
-    return (
-      currentUrl.includes("x.com/i/flow/login") ||
-      currentUrl.includes("twitter.com/i/flow/login")
-    );
-  }
-
   return false;
 }
 
@@ -248,28 +232,11 @@ async function tryInstagramCredentialLogin(page) {
   return true;
 }
 
-async function tryTwitterCredentialLogin(page) {
-  if (!CONFIG.twitterUsername || !CONFIG.twitterPassword) {
-    return false;
+async function ensureAuthenticated(page, platform) {
+  if (platform === "tiktok") {
+    return;
   }
 
-  const usernameSelector = 'input[autocomplete="username"], input[name="text"]';
-  await page.waitForSelector(usernameSelector, { timeout: 20000 });
-  await page.click(usernameSelector, { clickCount: 3 });
-  await page.type(usernameSelector, CONFIG.twitterUsername, { delay: 45 });
-  await page.keyboard.press("Enter");
-
-  const passwordSelector = 'input[name="password"]';
-  await page.waitForSelector(passwordSelector, { timeout: 30000 });
-  await page.click(passwordSelector, { clickCount: 3 });
-  await page.type(passwordSelector, CONFIG.twitterPassword, { delay: 45 });
-  await delay(randomHumanDelay());
-  await page.keyboard.press("Enter");
-  await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 45000 });
-  return true;
-}
-
-async function ensureAuthenticated(page, platform) {
   const currentUrl = page.url();
   if (!isLoginPage(platform, currentUrl)) {
     return;
@@ -281,8 +248,6 @@ async function ensureAuthenticated(page, platform) {
   try {
     if (platform === "instagram") {
       loggedIn = await tryInstagramCredentialLogin(page);
-    } else if (platform === "twitter") {
-      loggedIn = await tryTwitterCredentialLogin(page);
     }
   } catch (error) {
     logger.warn({ err: error, platform }, "credential login attempt failed");
