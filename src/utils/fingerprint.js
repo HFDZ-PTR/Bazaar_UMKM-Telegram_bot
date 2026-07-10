@@ -1,3 +1,4 @@
+// src/utils/fingerprint.js
 const crypto = require("crypto");
 
 function createFingerprint(platform, postId) {

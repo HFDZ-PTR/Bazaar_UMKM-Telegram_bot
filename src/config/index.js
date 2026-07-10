@@ -1,15 +1,47 @@
+// src/config/index.js
+const path = require("path");
 const dotenv = require("dotenv");
 const { z } = require("zod");
 const { DEFAULT_HASHTAGS, PROJECT_ROOT } = require("./constants");
-const path = require("path");
 
 dotenv.config();
+
+function parseDurationToMinutes(value) {
+  const raw = String(value || "").trim().toLowerCase();
+
+  if (!raw) {
+    return 4 * 60;
+  }
+
+  const normalized = raw.replace(/\s+/g, "");
+  const pattern = /(\d+)(h|m)/g;
+
+  let totalMinutes = 0;
+  let matchedLength = 0;
+  let match;
+
+  while ((match = pattern.exec(normalized)) !== null) {
+    const amount = Number(match[1]);
+    const unit = match[2];
+
+    matchedLength += match[0].length;
+    totalMinutes += unit === "h" ? amount * 60 : amount;
+  }
+
+  if (matchedLength !== normalized.length || totalMinutes <= 0) {
+    throw new Error(
+      'Invalid SCRAPE_INTERVAL format. Use values like "5m", "1h", or "1h25m".',
+    );
+  }
+
+  return totalMinutes;
+}
 
 const envSchema = z.object({
   CHROME_PATH: z.string().min(1),
   CHROME_PROFILE_DIR: z.string().min(1),
   TELEGRAM_BOT_TOKEN: z.string().min(1),
-  TELEGRAM_CHAT_ID: z.string().min(1),
+  TELEGRAM_CHAT_ID: z.string().optional().default(""),
   PORT: z.coerce.number().int().positive().default(3000),
   API_KEY: z.string().optional().default(""),
   RUN_BOT_WITH_API: z
@@ -23,11 +55,12 @@ const envSchema = z.object({
   INSTAGRAM_COOKIE_JSON: z.string().optional().default(""),
   INSTAGRAM_HASHTAGS: z.string().default(DEFAULT_HASHTAGS.instagram.join(",")),
   TIKTOK_HASHTAGS: z.string().default(DEFAULT_HASHTAGS.tiktok.join(",")),
-  SCRAPE_INTERVAL_HOURS: z.coerce.number().int().positive().default(4),
+  SCRAPE_INTERVAL: z.string().optional().default("4h"),
   LOG_LEVEL: z.string().default("info"),
 });
 
 const parsedEnv = envSchema.parse(process.env);
+const scrapeIntervalMinutes = parseDurationToMinutes(parsedEnv.SCRAPE_INTERVAL);
 
 const CONFIG = {
   projectRoot: PROJECT_ROOT,
@@ -48,7 +81,9 @@ const CONFIG = {
   tiktokHashtags: parsedEnv.TIKTOK_HASHTAGS.split(",")
     .map((tag) => tag.trim())
     .filter(Boolean),
-  scrapeIntervalHours: parsedEnv.SCRAPE_INTERVAL_HOURS,
+  scrapeIntervalMinutes,
+  scrapeIntervalHours: scrapeIntervalMinutes / 60,
+  scrapeIntervalLabel: parsedEnv.SCRAPE_INTERVAL,
   logLevel: parsedEnv.LOG_LEVEL,
   cookiesDir: path.join(PROJECT_ROOT, "cookies"),
   dataDir: path.join(PROJECT_ROOT, "data"),
@@ -58,13 +93,23 @@ const CONFIG = {
   errorsPath: path.join(PROJECT_ROOT, "data", "logs", "errors.json"),
   instagramCookiesPath: path.join(PROJECT_ROOT, "cookies", "instagram.json"),
   tiktokCookiesPath: path.join(PROJECT_ROOT, "cookies", "tiktok.json"),
+  telegramTargetsPath: path.join(
+    PROJECT_ROOT,
+    "data",
+    "telegram_targets.json",
+  ),
+  telegramUpdatesStatePath: path.join(
+    PROJECT_ROOT,
+    "data",
+    "telegram_updates_state.json",
+  ),
 };
 
 const eventSchema = z.object({
   platform: z.enum(["instagram", "tiktok"]),
   postId: z.string().min(1),
   title: z.string().min(1),
-  date: z.string().min(1),
+  date: z.string().nullable().optional(),
   location: z.string().optional().default(""),
   organizer: z.string().optional().default(""),
   description: z.string().min(1),

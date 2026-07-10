@@ -1,10 +1,12 @@
+// src/services/bot.service.js
 const logger = require("../utils/logger");
 const { CONFIG } = require("../config");
 const { closeBrowser } = require("./browser.service");
 const { cleanupExpiredEvents } = require("./cleanup.service");
 const { runAllScrapers } = require("../scrapers");
+const { syncTelegramTargetsFromUpdates } = require("./telegram.service");
 
-const INTERVAL_MS = CONFIG.scrapeIntervalHours * 60 * 60 * 1000;
+const INTERVAL_MS = CONFIG.scrapeIntervalMinutes * 60 * 1000;
 
 const state = {
   startedAt: null,
@@ -45,6 +47,12 @@ async function executeCycle() {
   state.lastRunAt = new Date().toISOString();
 
   try {
+    try {
+      await syncTelegramTargetsFromUpdates();
+    } catch (error) {
+      logger.error({ err: error }, "telegram update sync failed");
+    }
+
     let cleanupResult;
 
     try {
@@ -147,6 +155,8 @@ function getStatus() {
     isStopping: state.isStopping,
     nextRunAt: state.nextRunAt,
     intervalHours: CONFIG.scrapeIntervalHours,
+    intervalMinutes: CONFIG.scrapeIntervalMinutes,
+    intervalLabel: CONFIG.scrapeIntervalLabel,
   };
 }
 

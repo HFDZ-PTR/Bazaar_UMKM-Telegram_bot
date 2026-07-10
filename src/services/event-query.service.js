@@ -1,3 +1,4 @@
+// src/services/event-query.service.js
 const storage = require("../utils/storage.service");
 const { createFingerprint } = require("../utils/fingerprint");
 const { parseEventDateString, isExpiredEventDate } = require("../utils/date");
@@ -180,7 +181,9 @@ async function queryEvents(options = {}) {
 
 async function getEventById(id) {
   const events = await loadAllEvents();
-  return events.find((event) => event.id === id || event.postId === id) || null;
+  return (
+    events.find((event) => event.id === id || event.postId === id) || null
+  );
 }
 
 async function getEventsByPlatform(platform, options = {}) {

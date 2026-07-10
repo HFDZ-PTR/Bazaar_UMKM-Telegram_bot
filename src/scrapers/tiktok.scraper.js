@@ -1,3 +1,4 @@
+// src/scrapers/tiktok.scraper.js
 const { CONFIG } = require("../config");
 const { MAX_POSTS_PER_SCRAPE } = require("../config/constants");
 const {
@@ -17,7 +18,10 @@ const CONFIGURATION = {
   initialDelayMinMs: 3000,
   initialDelayMaxMs: 5000,
   scrollSteps: 4,
+  waitForCardsTimeoutMs: 15000,
 };
+
+const debugDumpState = new Set();
 
 function randomInitialDelay() {
   return (
@@ -28,24 +32,96 @@ function randomInitialDelay() {
   );
 }
 
+function normalizeTikTokUrl(href) {
+  if (!href) return "";
+  if (href.startsWith("http://") || href.startsWith("https://")) return href;
+  if (href.startsWith("//")) return `https:${href}`;
+  if (href.startsWith("/")) return `https://www.tiktok.com${href}`;
+  return `https://www.tiktok.com/${href}`;
+}
+
+async function dumpHtmlOnce(page, hashtag, label) {
+  const key = `${hashtag}:${label}`;
+  if (debugDumpState.has(key)) {
+    return;
+  }
+
+  debugDumpState.add(key);
+
+  try {
+    const html = await page.content();
+    await dumpHtml(`tiktok-${hashtag}-${label}`, html);
+  } catch (error) {
+    logger.warn(
+      { hashtag, label, error: error?.message },
+      "failed to dump debug html",
+    );
+  }
+}
+
+async function getPageSignals(page) {
+  return page
+    .evaluate(() => {
+      const bodyText = document.body?.innerText || "";
+
+      return {
+        hasErrorText: /something went wrong/i.test(bodyText),
+        hasVerifyText:
+          /captcha|verify|security check|unusual activity|verify to continue/i.test(
+            bodyText,
+          ),
+        challengeItemCount: document.querySelectorAll(
+          'div[data-e2e="challenge-item"]',
+        ).length,
+        videoLinkCount: document.querySelectorAll('a[href*="/video/"]').length,
+      };
+    })
+    .catch(() => ({
+      hasErrorText: false,
+      hasVerifyText: false,
+      challengeItemCount: 0,
+      videoLinkCount: 0,
+    }));
+}
+
 async function isVerificationWall(page) {
   const currentUrl = page.url().toLowerCase();
   if (/captcha|verify|login|challenge/.test(currentUrl)) {
     return true;
   }
 
-  const bodyText = await page
-    .evaluate(() => document.body?.innerText || "")
-    .catch(() => "");
+  const signals = await getPageSignals(page);
+  return signals.hasVerifyText;
+}
 
-  return /captcha|verify|security check|unusual activity|verify to continue/i.test(
-    bodyText,
-  );
+async function waitForHashtagResults(page) {
+  try {
+    await page.waitForSelector('div[data-e2e="challenge-item"]', {
+      timeout: CONFIGURATION.waitForCardsTimeoutMs,
+    });
+    return "cards";
+  } catch (_) {}
+
+  const signals = await getPageSignals(page);
+
+  if (signals.challengeItemCount > 0) {
+    return "cards";
+  }
+
+  if (signals.hasErrorText) {
+    return "error";
+  }
+
+  if (signals.hasVerifyText) {
+    return "verify";
+  }
+
+  return "timeout";
 }
 
 async function scrapeHashtag(page, hashtag) {
   const url = `${CONFIGURATION.baseUrl}${encodeURIComponent(hashtag)}`;
-  logger.info(`[SCAN] scraping tiktok hashtag #${hashtag}`);
+  logger.info({ hashtag, url }, `[SCAN] scraping tiktok hashtag #${hashtag}`);
 
   await retryOperation(() =>
     page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }),
@@ -54,99 +130,172 @@ async function scrapeHashtag(page, hashtag) {
   await delay(randomInitialDelay());
 
   if (await isVerificationWall(page)) {
+    await dumpHtmlOnce(page, hashtag, "verify");
+
     logger.warn(
       { hashtag, url },
-      "tiktok verification wall detected, skipping",
+      "tiktok verification wall detected before results load",
     );
     return [];
   }
 
-  await page
-    .waitForSelector('a[href*="/video/"]', { timeout: 15000 })
-    .catch(() => {
-      logger.warn({ hashtag }, "tiktok video grid did not appear in time");
-    });
+  const readyState = await waitForHashtagResults(page);
 
-  if (await isVerificationWall(page)) {
+  if (readyState === "verify") {
+    await dumpHtmlOnce(page, hashtag, "verify");
+
     logger.warn(
       { hashtag, url },
-      "tiktok verification wall detected after load",
+      "tiktok verification wall detected while waiting for results",
+    );
+    return [];
+  }
+
+  if (readyState === "error") {
+    await dumpHtmlOnce(page, hashtag, "failed-load");
+
+    logger.warn(
+      { hashtag, url, readyState },
+      'tiktok hashtag page returned "something went wrong"',
+    );
+    return [];
+  }
+
+  if (readyState !== "cards") {
+    await dumpHtmlOnce(page, hashtag, "timeout");
+
+    logger.warn(
+      { hashtag, url, readyState },
+      "tiktok hashtag page did not load challenge items in time",
     );
     return [];
   }
 
   await scrollPage(page, CONFIGURATION.scrollSteps);
 
+  if (await isVerificationWall(page)) {
+    await dumpHtmlOnce(page, hashtag, "verify-after-scroll");
+
+    logger.warn(
+      { hashtag, url },
+      "tiktok verification wall detected after scroll",
+    );
+    return [];
+  }
+
+  const signalsAfterScroll = await getPageSignals(page);
+
+  if (signalsAfterScroll.challengeItemCount === 0) {
+    await dumpHtmlOnce(page, hashtag, "no-cards");
+
+    logger.warn(
+      { hashtag, url, signalsAfterScroll },
+      "no challenge items found after successful load state",
+    );
+    return [];
+  }
+
   const rawCards = await page.evaluate(() => {
     const seen = new Set();
-    const cards = [];
+    const rows = [];
 
-    const anchors = Array.from(document.querySelectorAll('a[href*="/video/"]'));
-    for (const anchor of anchors) {
+    for (const item of document.querySelectorAll(
+      'div[data-e2e="challenge-item"]',
+    )) {
+      const anchor = item.querySelector('a[href*="/video/"]');
+      if (!anchor) continue;
+
       const href = anchor.getAttribute("href") || anchor.href || "";
-      if (!href || seen.has(href)) {
-        continue;
-      }
+      const videoId = (href.match(/\/video\/(\d+)/) || [])[1] || "";
+      if (!videoId || seen.has(videoId)) continue;
+      seen.add(videoId);
 
-      seen.add(href);
+      const username =
+        item
+          .querySelector('[data-e2e="challenge-item-username"]')
+          ?.textContent?.replace(/\s+/g, " ")
+          .trim() || "";
 
-      const container =
-        anchor.closest("div[data-e2e], article, li, div") ||
-        anchor.parentElement ||
-        anchor;
-      const captionCandidates = [
-        anchor.getAttribute("aria-label"),
-        anchor.getAttribute("title"),
-        container?.querySelector?.('[data-e2e="video-desc"]')?.textContent,
-        container?.querySelector?.('[data-e2e="browse-video-desc"]')
-          ?.textContent,
-        container?.querySelector?.("h3")?.textContent,
-        container?.textContent,
-      ]
-        .map((value) => (value || "").replace(/\s+/g, " ").trim())
-        .filter(Boolean);
+      const descEl = item.querySelector('[data-e2e="challenge-item-desc"]');
 
-      const caption = captionCandidates[0] || "";
-      const authorMatch = href.match(/@([^/]+)/);
-      const thumbnailUrl =
-        container?.querySelector?.("img")?.src ||
-        anchor.querySelector?.("img")?.src ||
+      const caption =
+        descEl?.getAttribute("aria-label") ||
+        descEl?.textContent?.replace(/\s+/g, " ").trim() ||
+        anchor.getAttribute("title") ||
+        anchor.getAttribute("aria-label") ||
         "";
 
-      cards.push({
+      const thumbnailUrl =
+        item.querySelector("img")?.getAttribute("src") ||
+        item.querySelector("img")?.src ||
+        "";
+
+      rows.push({
         href,
-        videoId: (href.match(/\/video\/(\d+)/) || [])[1] || "",
+        videoId,
+        authorUsername: username,
         caption,
-        authorUsername: authorMatch ? authorMatch[1] : "",
         thumbnailUrl,
       });
     }
 
-    return cards;
+    return rows;
   });
 
-  const freshCards = rawCards.filter(
-    (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
-  );
+  const freshCards = rawCards
+    .map((card) => ({
+      ...card,
+      href: normalizeTikTokUrl(card.href),
+    }))
+    .filter(
+      (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
+    );
 
   const cardsToProcess = freshCards.slice(0, MAX_POSTS_PER_SCRAPE);
+
   if (cardsToProcess.length === 0) {
+    await dumpHtmlOnce(page, hashtag, "no-fresh-cards");
+
+    logger.warn(
+      {
+        hashtag,
+        url,
+        rawCount: rawCards.length,
+        freshCount: freshCards.length,
+      },
+      "no fresh TikTok cards found",
+    );
     return [];
   }
 
-  const html = await page.content();
-  await dumpHtml("tiktok", html);
-
   const posts = [];
   for (const card of cardsToProcess) {
-    const parsed = parseTikTokVideo(card);
-    if (parsed) {
-      posts.push(parsed);
+    try {
+      const parsed = parseTikTokVideo(card);
+      if (parsed) {
+        posts.push(parsed);
+      }
+    } catch (error) {
+      logger.warn(
+        {
+          hashtag,
+          videoId: card.videoId,
+          href: card.href,
+          error: error?.message,
+        },
+        "failed to parse TikTok video card",
+      );
     }
   }
 
   logger.info(
-    `[DONE] parsed ${posts.length} TikTok posts from #${hashtag} out of ${cardsToProcess.length} fresh cards`,
+    {
+      hashtag,
+      extractedCards: rawCards.length,
+      freshCards: cardsToProcess.length,
+      parsed: posts.length,
+    },
+    `[DONE] parsed ${posts.length} TikTok posts from #${hashtag}`,
   );
 
   return posts;
@@ -157,7 +306,11 @@ async function scrapeTikTok() {
   const events = [];
 
   try {
-    for (const hashtag of CONFIG.tiktokHashtags) {
+    const hashtags = Array.isArray(CONFIG.tiktokHashtags)
+      ? CONFIG.tiktokHashtags
+      : [];
+
+    for (const hashtag of hashtags) {
       const remainingBudget = MAX_POSTS_PER_SCRAPE - events.length;
       if (remainingBudget <= 0) {
         break;

@@ -1,3 +1,4 @@
+// src/api/routes/events.routes.js
 const express = require("express");
 const {
   getEventById,

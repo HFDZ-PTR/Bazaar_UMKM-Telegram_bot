@@ -1,3 +1,4 @@
+// src/parsers/tiktok.parser.js
 const { eventSchema } = require("../config");
 const { extractLocation, extractEventDate } = require("./instagram.parser");
 
@@ -45,26 +46,38 @@ function buildSourceUrl(href) {
     : new URL(href, "https://www.tiktok.com").toString();
 }
 
+function buildTitle(caption, authorUsername) {
+  const cleaned = normalizeText(caption);
+  if (!cleaned) {
+    return authorUsername
+      ? `TikTok post by @${authorUsername}`
+      : "TikTok event post";
+  }
+
+  return cleaned.slice(0, 120);
+}
+
 function parseTikTokVideo(card) {
   const href = String(card?.href || "").trim();
   const videoId = String(card?.videoId || extractVideoId(href) || "").trim();
   const caption = normalizeText(card?.caption || card?.description || "");
-  const title = normalizeText(caption.split(/\r?\n/)[0]).slice(0, 120);
+  const authorUsername = normalizeText(card?.authorUsername || "");
+  const title = buildTitle(caption, authorUsername);
   const eventDate = extractEventDate(caption);
+  const now = new Date().toISOString();
 
-  if (!videoId || !title || !eventDate) {
+  if (!videoId || (!caption && !title)) {
     return null;
   }
 
-  const now = new Date().toISOString();
   const event = {
     platform: "tiktok",
     postId: videoId,
     title,
-    date: eventDate,
-    eventDate,
-    location: extractLocation(caption),
-    organizer: extractOrganizer(caption, card?.authorUsername || ""),
+    date: eventDate || null,
+    eventDate: eventDate || null,
+    location: extractLocation(caption) || "",
+    organizer: extractOrganizer(caption, authorUsername),
     description: caption || title,
     imageUrl: String(card?.thumbnailUrl || "").trim(),
     sourceUrl: buildSourceUrl(href),

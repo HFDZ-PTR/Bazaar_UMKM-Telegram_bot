@@ -1,3 +1,4 @@
+// src/api/middleware/error.middleware.js
 const logger = require("../../utils/logger");
 const { sendError } = require("../response");
 
@@ -7,11 +8,12 @@ function errorMiddleware(error, req, res, next) {
   }
 
   logger.error({ err: error, path: req.originalUrl }, "api request failed");
-  return sendError(
-    res,
-    error.status || 500,
-    error.message || "Internal server error",
-  );
+
+  const statusCode = error.status || 500;
+  const message =
+    statusCode === 500 ? "Internal server error" : error.message;
+
+  return sendError(res, statusCode, message);
 }
 
 module.exports = errorMiddleware;

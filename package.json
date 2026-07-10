@@ -8,7 +8,8 @@
     "start": "node src/app.js",
     "bot": "node src/bot.js",
     "dev": "nodemon src/app.js",
-    "dev:bot": "nodemon src/bot.js"
+    "dev:bot": "nodemon src/bot.js",
+    "run:once": "node src/run-once.js"
   },
   "engines": {
     "node": ">=18"

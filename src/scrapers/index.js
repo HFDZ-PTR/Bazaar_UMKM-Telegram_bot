@@ -12,12 +12,12 @@ async function processEvent(event) {
   if (!result.success) {
     logger.warn(
       {
-        issues: result.error.issues.map((i) => i.message),
+        issues: result.error.issues.map((issue) => issue.message),
         postId: event?.postId,
       },
       `[WARN] skipped invalid event`,
     );
-    return;
+    return false;
   }
 
   const validatedEvent = result.data;
@@ -28,7 +28,7 @@ async function processEvent(event) {
 
   if (!isNew) {
     logger.debug(`[SCAN] dup - skipping ${validatedEvent.postId}`);
-    return;
+    return false;
   }
 
   const filePath = await appendEvent(validatedEvent);
@@ -40,20 +40,30 @@ async function processEvent(event) {
   );
 
   await telegramService.sendEvent(validatedEvent);
+  return true;
 }
 
 async function runScraper(scraperName, scraper) {
   logger.info(`[SCAN] running scraper: ${scraperName}`);
   try {
     const events = await scraper();
-    let saved = 0;
+    let savedCount = 0;
+
     for (const event of events) {
-      await processEvent(event);
-      saved++;
+      const wasSaved = await processEvent(event);
+      if (wasSaved) {
+        savedCount++;
+      }
     }
-    logger.info(`[DONE] ${scraperName} finished - processed ${saved} events`);
+
+    logger.info(
+      `[DONE] ${scraperName} finished - saved ${savedCount} of ${events.length} events`,
+    );
   } catch (error) {
-    logger.error({ err: error.message, scraperName }, `[FAIL] scraper crashed`);
+    logger.error(
+      { err: error.message, scraperName },
+      `[FAIL] scraper crashed`,
+    );
     await appendError({
       scraperName,
       message: error.message,

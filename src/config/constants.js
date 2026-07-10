@@ -1,10 +1,25 @@
+// src/config/constants.js
 const path = require("path");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 
 const DEFAULT_HASHTAGS = {
-  instagram: ["bazarumkm", "umkmjakarta", "bazarjakarta"],
-  tiktok: ["bazarumkm", "umkmjakarta", "bazarjakarta"],
+  instagram: [
+    "bazaarumkm",
+    "bazarumkm",
+    "umkmjakarta",
+    "bazarjakarta",
+    "callingtenant",
+    "infobazaar",
+  ],
+  tiktok: [
+    "bazaarumkm",
+    "bazarumkm",
+    "umkmjakarta",
+    "bazarjakarta",
+    "callingtenant",
+    "infobazaar",
+  ],
 };
 
 const HUMAN_DELAY_MIN_MS = 1000;

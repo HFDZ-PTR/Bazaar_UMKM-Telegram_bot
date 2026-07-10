@@ -1,3 +1,4 @@
+// src/bot.js
 const logger = require("./utils/logger");
 const botService = require("./services/bot.service");
 

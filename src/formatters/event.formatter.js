@@ -1,3 +1,4 @@
+// src/formatters/event.formatter.js
 function escapeMarkdown(text = "") {
   return String(text)
     .replace(/\\/g, "\\\\")

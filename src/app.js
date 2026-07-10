@@ -1,3 +1,4 @@
+// src/app.js
 const logger = require("./utils/logger");
 const { CONFIG } = require("./config");
 const app = require("./api/server");
@@ -30,7 +31,10 @@ async function start() {
 
   if (CONFIG.runBotWithApi) {
     void botService.start().catch((error) => {
-      logger.error({ err: error }, "bot worker failed during combined startup");
+      logger.error(
+        { err: error },
+        "bot worker failed during combined startup",
+      );
     });
   }
 

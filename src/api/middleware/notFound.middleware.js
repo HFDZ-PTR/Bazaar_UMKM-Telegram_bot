@@ -1,3 +1,4 @@
+// src/api/middleware/notFound.middleware.js
 const { sendError } = require("../response");
 
 function notFoundMiddleware(req, res) {

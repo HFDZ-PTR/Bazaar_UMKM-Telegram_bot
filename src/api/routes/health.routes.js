@@ -1,3 +1,4 @@
+// src/api/routes/health.routes.js
 const express = require("express");
 const botService = require("../../services/bot.service");
 const { sendSuccess } = require("../response");
