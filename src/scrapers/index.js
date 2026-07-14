@@ -27,26 +27,42 @@ async function processEvent(event) {
   );
 
   if (!isNew) {
-    logger.debug(`[SCAN] dup - skipping ${validatedEvent.postId}`);
+    logger.debug(
+      {
+        platform: validatedEvent.platform,
+        postId: validatedEvent.postId,
+        sourceHashtag: validatedEvent.sourceHashtag,
+      },
+      `[SCAN] dup - skipping ${validatedEvent.postId}`,
+    );
     return false;
   }
 
   const filePath = await appendEvent(validatedEvent);
   logger.info(
-    `[OK] saved [${validatedEvent.platform}] ${validatedEvent.postId.slice(0, 12)}` +
-      ` | date ${validatedEvent.eventDate || validatedEvent.date}` +
-      ` | location ${validatedEvent.location || "(no location)"}` +
-      ` -> ${filePath.split(/[\\/]/).slice(-2).join("/")}`,
+    {
+      platform: validatedEvent.platform,
+      postId: validatedEvent.postId,
+      sourceHashtag: validatedEvent.sourceHashtag,
+      eventDate: validatedEvent.eventDate || validatedEvent.date,
+      location: validatedEvent.location || "",
+      filePath,
+    },
+    `[OK] saved event`,
   );
 
   await telegramService.sendEvent(validatedEvent);
   return true;
 }
 
-async function runScraper(scraperName, scraper) {
-  logger.info(`[SCAN] running scraper: ${scraperName}`);
+async function runScraper(scraperName, scraper, hashtags = []) {
+  logger.info(
+    { scraperName, hashtags },
+    `[SCAN] running scraper: ${scraperName}`,
+  );
+
   try {
-    const events = await scraper();
+    const events = await scraper(hashtags);
     let savedCount = 0;
 
     for (const event of events) {
@@ -57,25 +73,41 @@ async function runScraper(scraperName, scraper) {
     }
 
     logger.info(
-      `[DONE] ${scraperName} finished - saved ${savedCount} of ${events.length} events`,
+      { scraperName, hashtags, savedCount, totalEvents: events.length },
+      `[DONE] ${scraperName} finished`,
     );
   } catch (error) {
     logger.error(
-      { err: error.message, scraperName },
+      { err: error.message, scraperName, hashtags },
       `[FAIL] scraper crashed`,
     );
     await appendError({
       scraperName,
+      hashtags,
       message: error.message,
       stack: error.stack,
     });
   }
 }
 
-async function runAllScrapers() {
+async function runAllScrapers(selectedHashtags = {}) {
   await dedupService.init();
-  await runScraper("instagram", scrapeInstagram);
-  await runScraper("tiktok", scrapeTikTok);
+
+  await runScraper(
+    "instagram",
+    scrapeInstagram,
+    Array.isArray(selectedHashtags.instagram)
+      ? selectedHashtags.instagram
+      : undefined,
+  );
+
+  await runScraper(
+    "tiktok",
+    scrapeTikTok,
+    Array.isArray(selectedHashtags.tiktok)
+      ? selectedHashtags.tiktok
+      : undefined,
+  );
 }
 
 module.exports = { runAllScrapers };

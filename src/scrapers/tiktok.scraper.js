@@ -119,7 +119,11 @@ async function waitForHashtagResults(page) {
   return "timeout";
 }
 
-async function scrapeHashtag(page, hashtag) {
+async function scrapeHashtag(
+  page,
+  hashtag,
+  remainingBudget = MAX_POSTS_PER_SCRAPE,
+) {
   const url = `${CONFIGURATION.baseUrl}${encodeURIComponent(hashtag)}`;
   logger.info({ hashtag, url }, `[SCAN] scraping tiktok hashtag #${hashtag}`);
 
@@ -251,7 +255,7 @@ async function scrapeHashtag(page, hashtag) {
       (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
     );
 
-  const cardsToProcess = freshCards.slice(0, MAX_POSTS_PER_SCRAPE);
+  const cardsToProcess = freshCards.slice(0, Math.max(0, remainingBudget));
 
   if (cardsToProcess.length === 0) {
     await dumpHtmlOnce(page, hashtag, "no-fresh-cards");
@@ -301,23 +305,27 @@ async function scrapeHashtag(page, hashtag) {
   return posts;
 }
 
-async function scrapeTikTok() {
+async function scrapeTikTok(selectedHashtags = CONFIG.tiktokHashtags) {
   const page = await createPage("tiktok");
   const events = [];
+  const hashtags = Array.isArray(selectedHashtags)
+    ? selectedHashtags.filter(Boolean)
+    : [];
 
   try {
-    const hashtags = Array.isArray(CONFIG.tiktokHashtags)
-      ? CONFIG.tiktokHashtags
-      : [];
-
     for (const hashtag of hashtags) {
       const remainingBudget = MAX_POSTS_PER_SCRAPE - events.length;
       if (remainingBudget <= 0) {
         break;
       }
 
-      const posts = await scrapeHashtag(page, hashtag);
-      events.push(...posts.slice(0, remainingBudget));
+      const posts = await scrapeHashtag(page, hashtag, remainingBudget);
+      const taggedPosts = posts.map((post) => ({
+        ...post,
+        sourceHashtag: hashtag,
+      }));
+
+      events.push(...taggedPosts);
 
       if (events.length >= MAX_POSTS_PER_SCRAPE) {
         logger.info(
@@ -327,7 +335,10 @@ async function scrapeTikTok() {
       }
     }
 
-    logger.info(`[DONE] tiktok scrape done - ${events.length} total events`);
+    logger.info(
+      { hashtags, totalEvents: events.length },
+      "[DONE] tiktok scrape done",
+    );
     return events.slice(0, MAX_POSTS_PER_SCRAPE).filter(Boolean);
   } finally {
     await closePage(page, "tiktok");

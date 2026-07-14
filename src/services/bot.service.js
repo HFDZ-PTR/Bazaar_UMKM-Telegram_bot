@@ -5,6 +5,7 @@ const { closeBrowser } = require("./browser.service");
 const { cleanupExpiredEvents } = require("./cleanup.service");
 const { runAllScrapers } = require("../scrapers");
 const { syncTelegramTargetsFromUpdates } = require("./telegram.service");
+const { selectCycleHashtags } = require("./hashtag-rotation.service");
 
 const INTERVAL_MS = CONFIG.scrapeIntervalMinutes * 60 * 1000;
 
@@ -18,6 +19,7 @@ const state = {
   isRunning: false,
   isStopping: false,
   nextRunAt: null,
+  lastSelectedHashtags: null,
 };
 
 let timer = null;
@@ -63,7 +65,10 @@ async function executeCycle() {
       logger.error({ err: error }, "cleanup cycle failed");
     }
 
-    await runAllScrapers();
+    const selectedHashtags = await selectCycleHashtags();
+    state.lastSelectedHashtags = selectedHashtags;
+
+    await runAllScrapers(selectedHashtags);
     state.lastScrapeAt = new Date().toISOString();
     state.lastError = null;
     state.cycleCount += 1;
@@ -72,6 +77,7 @@ async function executeCycle() {
       ok: true,
       cleanupResult,
       lastScrapeAt: state.lastScrapeAt,
+      selectedHashtags,
     };
   } catch (error) {
     state.lastError = error.message;
@@ -157,6 +163,7 @@ function getStatus() {
     intervalHours: CONFIG.scrapeIntervalHours,
     intervalMinutes: CONFIG.scrapeIntervalMinutes,
     intervalLabel: CONFIG.scrapeIntervalLabel,
+    lastSelectedHashtags: state.lastSelectedHashtags,
   };
 }
 

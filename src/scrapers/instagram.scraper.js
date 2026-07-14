@@ -233,19 +233,27 @@ async function scrapeHashtag(
   return posts.filter(Boolean);
 }
 
-async function scrapeInstagram() {
+async function scrapeInstagram(selectedHashtags = CONFIG.instagramHashtags) {
   const page = await createPage("instagram");
   const events = [];
+  const hashtags = Array.isArray(selectedHashtags)
+    ? selectedHashtags.filter(Boolean)
+    : CONFIG.instagramHashtags;
 
   try {
-    for (const hashtag of CONFIG.instagramHashtags) {
+    for (const hashtag of hashtags) {
       const remainingBudget = MAX_POSTS_PER_SCRAPE - events.length;
       if (remainingBudget <= 0) {
         break;
       }
 
       const posts = await scrapeHashtag(page, hashtag, remainingBudget);
-      events.push(...posts);
+      const taggedPosts = posts.map((post) => ({
+        ...post,
+        sourceHashtag: hashtag,
+      }));
+
+      events.push(...taggedPosts);
 
       if (events.length >= MAX_POSTS_PER_SCRAPE) {
         logger.info(
@@ -255,7 +263,10 @@ async function scrapeInstagram() {
       }
     }
 
-    logger.info(`[DONE] instagram scrape done - ${events.length} total events`);
+    logger.info(
+      { hashtags, totalEvents: events.length },
+      "[DONE] instagram scrape done",
+    );
     return events.slice(0, MAX_POSTS_PER_SCRAPE).filter(Boolean);
   } finally {
     await closePage(page, "instagram");
