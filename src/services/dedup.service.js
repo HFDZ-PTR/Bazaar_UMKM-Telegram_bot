@@ -1,17 +1,13 @@
 // src/services/dedup.service.js
-const { CONFIG } = require("../config");
+const db = require("./database.service");
 const { createFingerprint } = require("../utils/fingerprint");
-const { readJSON, writeJSON } = require("../utils/storage.service");
 
 class DedupService {
   constructor() {
-    this.seen = new Set();
-    this.ready = false;
+    this.ready = true;
   }
 
   async init() {
-    const stored = await readJSON(CONFIG.seenIdsPath, []);
-    this.seen = new Set(Array.isArray(stored) ? stored : []);
     this.ready = true;
   }
 
@@ -21,32 +17,31 @@ class DedupService {
     }
 
     const fingerprint = createFingerprint(platform, postId);
-    if (this.seen.has(fingerprint)) {
-      return false;
-    }
 
-    this.seen.add(fingerprint);
-    await writeJSON(CONFIG.seenIdsPath, Array.from(this.seen));
-    return true;
+    const row = db.prepare(`
+      SELECT 1
+      FROM events
+      WHERE id = ? OR (platform = ? AND post_id = ?)
+      LIMIT 1
+    `).get(fingerprint, platform, postId);
+
+    return !row;
   }
 
-  async syncFromEvents(events) {
-    const fingerprints = Array.from(
-      new Set(
-        (Array.isArray(events) ? events : [])
-          .filter((event) => event?.platform && event?.postId)
-          .map((event) => createFingerprint(event.platform, event.postId)),
-      ),
-    );
-
-    this.seen = new Set(fingerprints);
+  async syncFromEvents() {
     this.ready = true;
-    await writeJSON(CONFIG.seenIdsPath, fingerprints);
   }
 
   has(platform, postId) {
     const fingerprint = createFingerprint(platform, postId);
-    return this.seen.has(fingerprint);
+    const row = db.prepare(`
+      SELECT 1
+      FROM events
+      WHERE id = ? OR (platform = ? AND post_id = ?)
+      LIMIT 1
+    `).get(fingerprint, platform, postId);
+
+    return Boolean(row);
   }
 
   createFingerprint(platform, postId) {

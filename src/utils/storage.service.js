@@ -1,6 +1,7 @@
 // src/utils/storage.service.js
 const fs = require("fs").promises;
 const path = require("path");
+const db = require("../services/database.service");
 const { CONFIG } = require("../config");
 const { createFingerprint } = require("./fingerprint");
 const { toIsoDateString, parseEventDateString } = require("./date");
@@ -100,26 +101,86 @@ function normalizeEventRecord(event) {
   };
 }
 
+const insertEventStmt = db.prepare(`
+  INSERT OR IGNORE INTO events (
+    id,
+    platform,
+    post_id,
+    title,
+    date,
+    event_date,
+    location,
+    organizer,
+    description,
+    image_url,
+    source_url,
+    source_hashtag,
+    scraped_at,
+    created_at
+  ) VALUES (
+    @id,
+    @platform,
+    @post_id,
+    @title,
+    @date,
+    @event_date,
+    @location,
+    @organizer,
+    @description,
+    @image_url,
+    @source_url,
+    @source_hashtag,
+    @scraped_at,
+    @created_at
+  )
+`);
+
 async function appendEvent(event) {
   const normalizedEvent = normalizeEventRecord(event);
-  const dateKey = normalizedEvent.eventDate || toIsoDateString(new Date());
-  const platformDir = getPlatformEventsDir(normalizedEvent.platform);
-  const filePath = path.join(platformDir, `${dateKey}.json`);
 
-  const existingEvents = await readJSON(filePath, []);
-  existingEvents.push(normalizedEvent);
+  const result = insertEventStmt.run({
+    id: normalizedEvent.id,
+    platform: normalizedEvent.platform,
+    post_id: normalizedEvent.postId,
+    title: normalizedEvent.title,
+    date: normalizedEvent.date || null,
+    event_date: normalizedEvent.eventDate || null,
+    location: normalizedEvent.location || "",
+    organizer: normalizedEvent.organizer || "",
+    description: normalizedEvent.description,
+    image_url: normalizedEvent.imageUrl || "",
+    source_url: normalizedEvent.sourceUrl,
+    source_hashtag: normalizedEvent.sourceHashtag || "",
+    scraped_at: normalizedEvent.scrapedAt,
+    created_at: normalizedEvent.createdAt,
+  });
 
-  await writeJSON(filePath, existingEvents);
-  return filePath;
+  return {
+    inserted: result.changes > 0,
+    id: normalizedEvent.id,
+  };
 }
 
+const insertErrorStmt = db.prepare(`
+  INSERT INTO scrape_errors (
+    message,
+    context_json,
+    timestamp
+  ) VALUES (
+    @message,
+    @context_json,
+    @timestamp
+  )
+`);
+
 async function appendError(errorEntry) {
-  const errors = await readJSON(CONFIG.errorsPath, []);
-  errors.push({
-    ...errorEntry,
+  const payload = {
+    message: errorEntry?.message || "Unknown error",
+    context_json: JSON.stringify(errorEntry || {}),
     timestamp: new Date().toISOString(),
-  });
-  await writeJSON(CONFIG.errorsPath, errors);
+  };
+
+  insertErrorStmt.run(payload);
 }
 
 module.exports = {

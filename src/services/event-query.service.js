@@ -1,11 +1,31 @@
 // src/services/event-query.service.js
-const storage = require("../utils/storage.service");
+const db = require("./database.service");
 const { createFingerprint } = require("../utils/fingerprint");
-const { parseEventDateString, isExpiredEventDate } = require("../utils/date");
+const { isExpiredEventDate } = require("../utils/date");
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+const ALLOWED_SORT_FIELDS = new Set([
+  "eventDate",
+  "createdAt",
+  "scrapedAt",
+  "title",
+  "location",
+  "organizer",
+  "platform",
+]);
+
+const SORT_FIELD_MAP = {
+  eventDate: "event_date",
+  createdAt: "created_at",
+  scrapedAt: "scraped_at",
+  title: "title",
+  location: "location",
+  organizer: "organizer",
+  platform: "platform",
+};
 
 function clampPage(value) {
   const page = Number.parseInt(String(value || DEFAULT_PAGE), 10);
@@ -21,103 +41,69 @@ function clampLimit(value) {
   return Math.min(limit, MAX_LIMIT);
 }
 
-function normalizeLoadedEvent(event) {
-  const parsedEventDate = parseEventDateString(event?.eventDate || null);
-
-  return {
-    ...event,
-    id: event.id || createFingerprint(event.platform, event.postId),
-    eventDate: parsedEventDate
-      ? parsedEventDate.toISOString().slice(0, 10)
-      : null,
-  };
-}
-
-function toComparableDate(value) {
-  if (!value) {
+function mapRowToEvent(row) {
+  if (!row) {
     return null;
   }
 
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
+  return {
+    id: row.id || createFingerprint(row.platform, row.post_id),
+    platform: row.platform,
+    postId: row.post_id,
+    title: row.title,
+    date: row.date,
+    eventDate: row.event_date,
+    location: row.location,
+    organizer: row.organizer,
+    description: row.description,
+    imageUrl: row.image_url,
+    sourceUrl: row.source_url,
+    sourceHashtag: row.source_hashtag,
+    scrapedAt: row.scraped_at,
+    createdAt: row.created_at,
+  };
 }
 
-function compareValues(left, right, order) {
-  const leftIsNull = left === null || left === undefined || left === "";
-  const rightIsNull = right === null || right === undefined || right === "";
+function buildWhereClause(options = {}) {
+  const conditions = [];
+  const params = {};
 
-  if (leftIsNull && rightIsNull) {
-    return 0;
+  const platform = String(options.platform || "").trim().toLowerCase();
+  const searchQuery = String(options.q || "").trim();
+
+  if (platform) {
+    conditions.push("platform = @platform");
+    params.platform = platform;
   }
 
-  if (leftIsNull) {
-    return 1;
+  if (searchQuery) {
+    params.search = `%${searchQuery}%`;
+    conditions.push(`
+      (
+        title LIKE @search OR
+        description LIKE @search OR
+        location LIKE @search OR
+        organizer LIKE @search
+      )
+    `);
   }
 
-  if (rightIsNull) {
-    return -1;
-  }
-
-  if (left === right) {
-    return 0;
-  }
-
-  const direction = order === "desc" ? -1 : 1;
-  return left < right ? -1 * direction : 1 * direction;
+  return {
+    whereSql: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
+    params,
+  };
 }
 
-function compareEvents(left, right, sortBy, order) {
-  if (
-    sortBy === "eventDate" ||
-    sortBy === "createdAt" ||
-    sortBy === "scrapedAt"
-  ) {
-    const leftValue =
-      sortBy === "eventDate"
-        ? toComparableDate(
-            left.eventDate ? `${left.eventDate}T00:00:00.000Z` : null,
-          )
-        : toComparableDate(left[sortBy]);
-    const rightValue =
-      sortBy === "eventDate"
-        ? toComparableDate(
-            right.eventDate ? `${right.eventDate}T00:00:00.000Z` : null,
-          )
-        : toComparableDate(right[sortBy]);
+function buildOrderClause(sortBy = "eventDate", order = "asc") {
+  const safeSortBy = ALLOWED_SORT_FIELDS.has(sortBy) ? sortBy : "eventDate";
+  const safeOrder = order === "desc" ? "DESC" : "ASC";
+  const column = SORT_FIELD_MAP[safeSortBy];
 
-    return compareValues(leftValue, rightValue, order);
-  }
-
-  const leftValue = String(left[sortBy] || "").toLowerCase();
-  const rightValue = String(right[sortBy] || "").toLowerCase();
-  return compareValues(leftValue, rightValue, order);
-}
-
-function matchesSearch(event, query) {
-  const haystack = [
-    event.title,
-    event.description,
-    event.location,
-    event.organizer,
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  return haystack.includes(query.toLowerCase());
-}
-
-async function loadAllEvents() {
-  const files = await storage.listEventFiles();
-  const events = [];
-
-  for (const filePath of files) {
-    const fileEvents = await storage.readJSON(filePath, []);
-    for (const event of fileEvents) {
-      events.push(normalizeLoadedEvent(event));
-    }
-  }
-
-  return events;
+  return {
+    sortBy: safeSortBy,
+    order: safeOrder.toLowerCase(),
+    orderSql: `ORDER BY ${column} ${safeOrder}, created_at DESC`,
+  };
 }
 
 function filterExpiredEvents(events, includeExpired) {
@@ -134,37 +120,121 @@ function filterExpiredEvents(events, includeExpired) {
   });
 }
 
+async function loadAllEvents() {
+  const rows = db.prepare(`
+    SELECT
+      id,
+      platform,
+      post_id,
+      title,
+      date,
+      event_date,
+      location,
+      organizer,
+      description,
+      image_url,
+      source_url,
+      source_hashtag,
+      scraped_at,
+      created_at
+    FROM events
+    ORDER BY created_at DESC
+  `).all();
+
+  return rows.map(mapRowToEvent);
+}
+
 async function queryEvents(options = {}) {
   const page = clampPage(options.page);
   const limit = clampLimit(options.limit);
-  const sortBy = options.sortBy || "eventDate";
-  const order = options.order === "desc" ? "desc" : "asc";
-  const platform = String(options.platform || "")
-    .trim()
-    .toLowerCase();
-  const searchQuery = String(options.q || "").trim();
+  const offset = (page - 1) * limit;
 
-  let events = await loadAllEvents();
+  const { whereSql, params } = buildWhereClause(options);
+  const { sortBy, order, orderSql } = buildOrderClause(
+    options.sortBy,
+    options.order,
+  );
 
-  if (platform) {
-    events = events.filter(
-      (event) => String(event.platform || "").toLowerCase() === platform,
-    );
+  const countRow = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM events
+    ${whereSql}
+  `).get(params);
+
+  const rows = db.prepare(`
+    SELECT
+      id,
+      platform,
+      post_id,
+      title,
+      date,
+      event_date,
+      location,
+      organizer,
+      description,
+      image_url,
+      source_url,
+      source_hashtag,
+      scraped_at,
+      created_at
+    FROM events
+    ${whereSql}
+    ${orderSql}
+    LIMIT @limit OFFSET @offset
+  `).all({
+    ...params,
+    limit,
+    offset,
+  });
+
+  let data = rows.map(mapRowToEvent);
+  data = filterExpiredEvents(data, Boolean(options.includeExpired));
+
+  let total = countRow?.total || 0;
+
+  if (!options.includeExpired) {
+    const allFilteredRows = db.prepare(`
+      SELECT
+        id,
+        platform,
+        post_id,
+        title,
+        date,
+        event_date,
+        location,
+        organizer,
+        description,
+        image_url,
+        source_url,
+        source_hashtag,
+        scraped_at,
+        created_at
+      FROM events
+      ${whereSql}
+      ${orderSql}
+    `).all(params);
+
+    total = filterExpiredEvents(
+      allFilteredRows.map(mapRowToEvent),
+      false,
+    ).length;
+
+    const pagedFilteredRows = allFilteredRows
+      .map(mapRowToEvent)
+      .filter((event) => {
+        if (!event.eventDate) {
+          return true;
+        }
+
+        return !isExpiredEventDate(event.eventDate, 7);
+      })
+      .slice(offset, offset + limit);
+
+    data = pagedFilteredRows;
   }
 
-  if (searchQuery) {
-    events = events.filter((event) => matchesSearch(event, searchQuery));
-  }
-
-  events = filterExpiredEvents(events, Boolean(options.includeExpired));
-
-  events.sort((left, right) => compareEvents(left, right, sortBy, order));
-
-  const total = events.length;
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.min(page, totalPages);
-  const offset = (currentPage - 1) * limit;
-  const data = events.slice(offset, offset + limit);
 
   return {
     data,
@@ -180,10 +250,28 @@ async function queryEvents(options = {}) {
 }
 
 async function getEventById(id) {
-  const events = await loadAllEvents();
-  return (
-    events.find((event) => event.id === id || event.postId === id) || null
-  );
+  const row = db.prepare(`
+    SELECT
+      id,
+      platform,
+      post_id,
+      title,
+      date,
+      event_date,
+      location,
+      organizer,
+      description,
+      image_url,
+      source_url,
+      source_hashtag,
+      scraped_at,
+      created_at
+    FROM events
+    WHERE id = ? OR post_id = ?
+    LIMIT 1
+  `).get(id, id);
+
+  return mapRowToEvent(row);
 }
 
 async function getEventsByPlatform(platform, options = {}) {

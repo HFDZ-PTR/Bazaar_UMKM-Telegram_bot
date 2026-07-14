@@ -3,7 +3,10 @@ const fs = require("fs/promises");
 const path = require("path");
 const { CONFIG } = require("../config");
 const { addJob } = require("./queue.service");
-const { formatEventMessage } = require("../formatters/event.formatter");
+const {
+  formatEventMessage,
+  formatPhotoCaption,
+} = require("../formatters/event.formatter");
 const { retryOperation } = require("../utils/retry");
 const logger = require("../utils/logger");
 
@@ -14,6 +17,18 @@ function delay(ms) {
 function getRetryAfter(body) {
   const retryAfter = Number(body?.parameters?.retry_after);
   return Number.isFinite(retryAfter) ? retryAfter : 0;
+}
+
+function isValidRemotePhotoUrl(value = "") {
+  try {
+    const url = new URL(String(value || "").trim());
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.hostname.length > 0
+    );
+  } catch (_) {
+    return false;
+  }
 }
 
 async function readJsonFile(filePath, fallback) {
@@ -47,8 +62,7 @@ async function sendTelegramApiRequest(method, payload) {
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const retryAfterSeconds =
-      response.status === 429 ? getRetryAfter(body) : 0;
+    const retryAfterSeconds = response.status === 429 ? getRetryAfter(body) : 0;
     if (retryAfterSeconds > 0) {
       await delay(retryAfterSeconds * 1000);
     }
@@ -246,27 +260,15 @@ async function sendTelegramMessageToChat(chatId, message) {
   });
 }
 
-async function sendTelegramPhotoToChat(chatId, event, message) {
-  const caption =
-    message.length <= 1024
-      ? message
-      : formatEventMessage({
-          ...event,
-          description: "",
-        });
+async function sendTelegramPhotoToChat(chatId, event) {
+  const caption = formatPhotoCaption(event, 220);
 
-  const photoResult = await sendTelegramApiRequest("sendPhoto", {
+  return sendTelegramApiRequest("sendPhoto", {
     chat_id: chatId,
-    photo: event.imageUrl,
+    photo: String(event.imageUrl || "").trim(),
     caption,
     parse_mode: "MarkdownV2",
   });
-
-  if (caption !== message) {
-    await sendTelegramMessageToChat(chatId, message);
-  }
-
-  return photoResult;
 }
 
 async function sendTelegramMessage(message) {
@@ -287,7 +289,7 @@ async function sendTelegramMessage(message) {
   return results;
 }
 
-async function sendTelegramPhoto(event, message) {
+async function sendTelegramPhoto(event) {
   const chatIds = await getTelegramTargetChatIds();
 
   if (!chatIds.length) {
@@ -298,7 +300,7 @@ async function sendTelegramPhoto(event, message) {
 
   const results = [];
   for (const chatId of chatIds) {
-    const result = await sendTelegramPhotoToChat(chatId, event, message);
+    const result = await sendTelegramPhotoToChat(chatId, event);
     results.push(result);
   }
 
@@ -310,10 +312,25 @@ async function sendEvent(event) {
 
   return addJob(() =>
     retryOperation(
-      () =>
-        event.imageUrl
-          ? sendTelegramPhoto(event, message)
-          : sendTelegramMessage(message),
+      async () => {
+        if (isValidRemotePhotoUrl(event.imageUrl)) {
+          try {
+            return await sendTelegramPhoto(event);
+          } catch (error) {
+            logger.warn(
+              {
+                platform: event.platform,
+                postId: event.postId,
+                imageUrl: event.imageUrl,
+                error: error?.message,
+              },
+              "sendPhoto failed, falling back to sendMessage",
+            );
+          }
+        }
+
+        return sendTelegramMessage(message);
+      },
       {
         retries: 2,
         minTimeout: 2000,

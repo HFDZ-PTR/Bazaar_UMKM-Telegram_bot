@@ -15,10 +15,23 @@ const LOCATION_STOP_PATTERNS = [
   /\s+[•\-–—]\s+.*$/,
 ];
 
-function cleanLocationCandidate(value) {
-  let candidate = String(value || "")
+function normalizeInlineText(value) {
+  return String(value || "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeMultilineText(value) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\t/g, " ")
+    .replace(/[ ]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function cleanLocationCandidate(value) {
+  let candidate = normalizeInlineText(value);
 
   for (const stopPattern of LOCATION_STOP_PATTERNS) {
     candidate = candidate.replace(stopPattern, "").trim();
@@ -55,23 +68,65 @@ function extractLocation(text) {
   return "";
 }
 
+function extractOrganizer(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const match = line.match(
+      /^(?:organizer|organiser|penyelenggara|hosted by|diselenggarakan oleh|oleh)\s*[:\-]\s*(.+)$/i,
+    );
+    if (match?.[1]) {
+      return normalizeInlineText(match[1]);
+    }
+  }
+
+  return "";
+}
+
 function extractEventDate(text) {
   return extractEventDateFromText(text);
 }
 
+function buildTitle(text) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => normalizeInlineText(line))
+    .filter(Boolean);
+
+  for (const line of lines) {
+    if (
+      /^#/.test(line) ||
+      /^(?:📍|lokasi|tempat|venue|location|📅|date|tanggal|jam|waktu)\b/i.test(line)
+    ) {
+      continue;
+    }
+
+    if (line.length >= 8) {
+      return line.slice(0, 120);
+    }
+  }
+
+  return normalizeInlineText(text).slice(0, 120);
+}
+
+function buildDescription(text) {
+  return normalizeMultilineText(text);
+}
+
 function parseInstagramPost(href, caption, imgSrc) {
   const postId = href.split("/").filter(Boolean).pop() || href;
-  const normalizedCaption = String(caption || "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalizedCaption = normalizeMultilineText(caption);
 
   if (!normalizedCaption) {
     return null;
   }
 
   const parsedEventDate = extractEventDate(normalizedCaption);
-  const title = normalizedCaption.slice(0, 100);
-  const description = normalizedCaption;
+  const title = buildTitle(normalizedCaption);
+  const description = buildDescription(normalizedCaption);
 
   return {
     platform: "instagram",
@@ -80,7 +135,7 @@ function parseInstagramPost(href, caption, imgSrc) {
     date: parsedEventDate || new Date().toISOString().slice(0, 10),
     eventDate: parsedEventDate,
     location: extractLocation(normalizedCaption),
-    organizer: "",
+    organizer: extractOrganizer(normalizedCaption),
     description,
     imageUrl: imgSrc || "",
     sourceUrl: href.startsWith("/")

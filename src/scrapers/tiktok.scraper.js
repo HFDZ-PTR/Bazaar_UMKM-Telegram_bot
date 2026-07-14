@@ -19,6 +19,7 @@ const CONFIGURATION = {
   initialDelayMaxMs: 5000,
   scrollSteps: 4,
   waitForCardsTimeoutMs: 15000,
+  maxDetailFetchesPerHashtag: 3,
 };
 
 const debugDumpState = new Set();
@@ -38,6 +39,13 @@ function normalizeTikTokUrl(href) {
   if (href.startsWith("//")) return `https:${href}`;
   if (href.startsWith("/")) return `https://www.tiktok.com${href}`;
   return `https://www.tiktok.com/${href}`;
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .replace(/\r/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function dumpHtmlOnce(page, hashtag, label) {
@@ -117,6 +125,83 @@ async function waitForHashtagResults(page) {
   }
 
   return "timeout";
+}
+
+async function fetchTikTokCaptionFromDetailPage(page, href) {
+  const url = normalizeTikTokUrl(href);
+
+  return retryOperation(
+    async () => {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await delay(2000);
+
+      const result = await page.evaluate(() => {
+        function normalizeDetailText(value) {
+          return String(value || "")
+            .replace(/\r/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+        }
+
+        const currentUrl = location.href;
+        const title = document.title || "";
+        const ogDescription =
+          document
+            .querySelector('meta[property="og:description"]')
+            ?.getAttribute("content") || "";
+        const descriptionMeta =
+          document
+            .querySelector('meta[name="description"]')
+            ?.getAttribute("content") || "";
+
+        const selectors = [
+          '[data-e2e="browse-video-desc"]',
+          '[data-e2e="video-desc"]',
+          'div[data-e2e="browse-video-desc"]',
+          'div[data-e2e="video-desc"]',
+          "h1[data-e2e]",
+        ];
+
+        const hits = selectors.map((selector) => ({
+          selector,
+          text: normalizeDetailText(
+            document.querySelector(selector)?.textContent || "",
+          ),
+        }));
+
+        const bodyText = normalizeDetailText(
+          document.body?.innerText || "",
+        ).slice(0, 500);
+
+        return {
+          currentUrl,
+          title: normalizeDetailText(title),
+          ogDescription: normalizeDetailText(ogDescription),
+          descriptionMeta: normalizeDetailText(descriptionMeta),
+          hits,
+          bodyText,
+        };
+      });
+
+      logger.info(
+        {
+          href: url,
+          detailPage: result,
+        },
+        "tiktok detail page debug",
+      );
+
+      const selectorHit = result.hits.find((item) => item.text);
+      const caption =
+        selectorHit?.text ||
+        result.ogDescription ||
+        result.descriptionMeta ||
+        "";
+
+      return normalizeText(caption);
+    },
+    { retries: 1, minTimeout: 1200 },
+  );
 }
 
 async function scrapeHashtag(
@@ -203,6 +288,102 @@ async function scrapeHashtag(
     const seen = new Set();
     const rows = [];
 
+    function normalizeCardText(value) {
+      return String(value || "")
+        .replace(/\r/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function getStateCaptionMap() {
+      const map = new Map();
+      const scripts = Array.from(document.querySelectorAll("script"));
+
+      for (const script of scripts) {
+        const text = script.textContent || "";
+        if (!text) continue;
+        if (!text.includes('"desc"') || !text.includes('"id"')) continue;
+
+        const idMatches = [...text.matchAll(/"id":"(\d+)"/g)];
+        const descMatches = [...text.matchAll(/"desc":"(.*?)"/g)];
+
+        if (!idMatches.length || !descMatches.length) {
+          continue;
+        }
+
+        const pairCount = Math.min(idMatches.length, descMatches.length);
+
+        for (let i = 0; i < pairCount; i += 1) {
+          const videoId = idMatches[i]?.[1];
+          const rawDesc = descMatches[i]?.[1] || "";
+
+          const decoded = normalizeCardText(
+            rawDesc
+              .replace(/\\"/g, '"')
+              .replace(/\\n/g, " ")
+              .replace(/\\\\/g, "\\")
+              .replace(/\\u002F/g, "/"),
+          );
+
+          if (videoId && decoded && !map.has(videoId)) {
+            map.set(videoId, decoded);
+          }
+        }
+      }
+
+      return map;
+    }
+
+    function collectCaptionParts(item, anchor, descEl, stateCaption) {
+      const candidates = [];
+
+      const push = (value) => {
+        const text = normalizeCardText(value);
+        if (text) {
+          candidates.push(text);
+        }
+      };
+
+      push(descEl?.getAttribute("aria-label"));
+      push(descEl?.textContent);
+      push(anchor?.getAttribute("title"));
+      push(anchor?.getAttribute("aria-label"));
+      push(stateCaption);
+
+      for (const node of item.querySelectorAll('[data-e2e="new-desc-span"]')) {
+        push(node.textContent);
+      }
+
+      for (const node of item.querySelectorAll("span")) {
+        const text = normalizeCardText(node.textContent);
+        if (!text) continue;
+        if (text.length < 2) continue;
+        if (/^\d+[.,]?\d*\s*[KMB]?$/i.test(text)) continue;
+        if (
+          /^(like|likes|reply|replies|view|views|followers?|following)$/i.test(
+            text,
+          )
+        ) {
+          continue;
+        }
+        candidates.push(text);
+      }
+
+      const unique = [];
+      const seenTexts = new Set();
+
+      for (const value of candidates) {
+        const key = value.toLowerCase();
+        if (seenTexts.has(key)) continue;
+        seenTexts.add(key);
+        unique.push(value);
+      }
+
+      return unique.join(" ").trim();
+    }
+
+    const stateCaptionMap = getStateCaptionMap();
+
     for (const item of document.querySelectorAll(
       'div[data-e2e="challenge-item"]',
     )) {
@@ -221,13 +402,8 @@ async function scrapeHashtag(
           .trim() || "";
 
       const descEl = item.querySelector('[data-e2e="challenge-item-desc"]');
-
-      const caption =
-        descEl?.getAttribute("aria-label") ||
-        descEl?.textContent?.replace(/\s+/g, " ").trim() ||
-        anchor.getAttribute("title") ||
-        anchor.getAttribute("aria-label") ||
-        "";
+      const stateCaption = stateCaptionMap.get(videoId) || "";
+      const caption = collectCaptionParts(item, anchor, descEl, stateCaption);
 
       const thumbnailUrl =
         item.querySelector("img")?.getAttribute("src") ||
@@ -255,6 +431,18 @@ async function scrapeHashtag(
       (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
     );
 
+  logger.info(
+    {
+      hashtag,
+      sampleCards: freshCards.slice(0, 3).map((card) => ({
+        videoId: card.videoId,
+        authorUsername: card.authorUsername,
+        caption: card.caption?.slice(0, 120) || "",
+      })),
+    },
+    "sample TikTok cards before parse",
+  );
+
   const cardsToProcess = freshCards.slice(0, Math.max(0, remainingBudget));
 
   if (cardsToProcess.length === 0) {
@@ -273,9 +461,29 @@ async function scrapeHashtag(
   }
 
   const posts = [];
+  let detailFetchCount = 0;
+
   for (const card of cardsToProcess) {
     try {
-      const parsed = parseTikTokVideo(card);
+      let enrichedCard = { ...card };
+
+      if (
+        !normalizeText(enrichedCard.caption) &&
+        detailFetchCount < CONFIGURATION.maxDetailFetchesPerHashtag
+      ) {
+        detailFetchCount += 1;
+
+        const detailCaption = await fetchTikTokCaptionFromDetailPage(
+          page,
+          enrichedCard.href,
+        );
+
+        if (detailCaption) {
+          enrichedCard.caption = detailCaption;
+        }
+      }
+
+      const parsed = parseTikTokVideo(enrichedCard);
       if (parsed) {
         posts.push(parsed);
       }
@@ -298,6 +506,7 @@ async function scrapeHashtag(
       extractedCards: rawCards.length,
       freshCards: cardsToProcess.length,
       parsed: posts.length,
+      detailFetches: detailFetchCount,
     },
     `[DONE] parsed ${posts.length} TikTok posts from #${hashtag}`,
   );
