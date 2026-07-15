@@ -11,12 +11,21 @@ const { sendError, sendSuccess } = require("../response");
 
 const router = express.Router();
 
-function parsePagination(query) {
+function parsePositiveInt(value) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseOrder(value) {
+  return String(value || "").toLowerCase() === "asc" ? "asc" : "desc";
+}
+
+function parsePagination(query = {}) {
   return {
-    page: query.page,
-    limit: query.limit,
-    sortBy: query.sortBy,
-    order: query.order,
+    page: parsePositiveInt(query.page),
+    limit: parsePositiveInt(query.limit),
+    sortBy: query.sortBy ? String(query.sortBy).trim() : undefined,
+    order: parseOrder(query.order),
   };
 }
 
@@ -27,32 +36,34 @@ router.get("/events", async (req, res, next) => {
       includeExpired: false,
     });
 
-    return sendSuccess(res, result.data, result.meta);
+    sendSuccess(res, result.data, result.meta);
   } catch (error) {
-    return next(error);
+    next(error);
   }
 });
 
 router.get("/events/upcoming", async (req, res, next) => {
   try {
     const result = await getUpcomingEvents(parsePagination(req.query));
-    return sendSuccess(res, result.data, result.meta);
+    sendSuccess(res, result.data, result.meta);
   } catch (error) {
-    return next(error);
+    next(error);
   }
 });
 
 router.get("/events/search", async (req, res, next) => {
   try {
-    const query = String(req.query.q || "").trim();
-    if (!query) {
-      return sendError(res, 400, "Query parameter q is required");
+    const keyword = String(req.query.q || "").trim();
+
+    if (!keyword) {
+      sendError(res, 400, "Query parameter q is required");
+      return;
     }
 
-    const result = await searchEvents(query, parsePagination(req.query));
-    return sendSuccess(res, result.data, result.meta);
+    const result = await searchEvents(keyword, parsePagination(req.query));
+    sendSuccess(res, result.data, result.meta);
   } catch (error) {
-    return next(error);
+    next(error);
   }
 });
 
@@ -63,9 +74,9 @@ router.get("/events/platform/:platform", async (req, res, next) => {
       includeExpired: false,
     });
 
-    return sendSuccess(res, result.data, result.meta);
+    sendSuccess(res, result.data, result.meta);
   } catch (error) {
-    return next(error);
+    next(error);
   }
 });
 
@@ -74,12 +85,13 @@ router.get("/events/:id", async (req, res, next) => {
     const event = await getEventById(req.params.id);
 
     if (!event) {
-      return sendError(res, 404, "Event not found");
+      sendError(res, 404, "Event not found");
+      return;
     }
 
-    return sendSuccess(res, event, {});
+    sendSuccess(res, event);
   } catch (error) {
-    return next(error);
+    next(error);
   }
 });
 

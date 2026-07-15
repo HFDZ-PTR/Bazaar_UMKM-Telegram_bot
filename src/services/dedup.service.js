@@ -2,45 +2,29 @@
 const db = require("./database.service");
 const { createFingerprint } = require("../utils/fingerprint");
 
-class DedupService {
-  constructor() {
-    this.ready = true;
-  }
+const findEventStmt = db.prepare(`
+  SELECT 1
+  FROM events
+  WHERE id = ? OR (platform = ? AND post_id = ?)
+  LIMIT 1
+`);
 
+class DedupService {
   async init() {
-    this.ready = true;
+    return;
   }
 
   async isNew(platform, postId) {
-    if (!this.ready) {
-      await this.init();
-    }
-
-    const fingerprint = createFingerprint(platform, postId);
-
-    const row = db.prepare(`
-      SELECT 1
-      FROM events
-      WHERE id = ? OR (platform = ? AND post_id = ?)
-      LIMIT 1
-    `).get(fingerprint, platform, postId);
-
-    return !row;
+    return !this.has(platform, postId);
   }
 
   async syncFromEvents() {
-    this.ready = true;
+    return;
   }
 
   has(platform, postId) {
     const fingerprint = createFingerprint(platform, postId);
-    const row = db.prepare(`
-      SELECT 1
-      FROM events
-      WHERE id = ? OR (platform = ? AND post_id = ?)
-      LIMIT 1
-    `).get(fingerprint, platform, postId);
-
+    const row = findEventStmt.get(fingerprint, platform, postId);
     return Boolean(row);
   }
 

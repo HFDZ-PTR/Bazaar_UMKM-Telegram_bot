@@ -1,7 +1,7 @@
 {
   "name": "umkm-bazaar-bot",
   "version": "1.0.0",
-  "description": "Automated UMKM bazaar scraper and Telegram forwarder for Instagram and X",
+  "description": "Automated UMKM bazaar scraper and Telegram forwarder for Instagram and TikTok with SQLite-backed storage and public REST API",
   "main": "src/app.js",
   "type": "commonjs",
   "scripts": {

@@ -15,14 +15,12 @@ const LOCATION_STOP_PATTERNS = [
   /\s+[•\-–—]\s+.*$/,
 ];
 
-function normalizeInlineText(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeInlineText(value = "") {
+  return String(value).replace(/\s+/g, " ").trim();
 }
 
-function normalizeMultilineText(value) {
-  return String(value || "")
+function normalizeMultilineText(value = "") {
+  return String(value)
     .replace(/\r/g, "")
     .replace(/\t/g, " ")
     .replace(/[ ]{2,}/g, " ")
@@ -30,23 +28,21 @@ function normalizeMultilineText(value) {
     .trim();
 }
 
-function cleanLocationCandidate(value) {
+function cleanLocationCandidate(value = "") {
   let candidate = normalizeInlineText(value);
 
-  for (const stopPattern of LOCATION_STOP_PATTERNS) {
-    candidate = candidate.replace(stopPattern, "").trim();
+  for (const pattern of LOCATION_STOP_PATTERNS) {
+    candidate = candidate.replace(pattern, "").trim();
   }
 
-  candidate = candidate
+  return candidate
     .replace(/^[\-:•\s]+/, "")
     .replace(/[|•·]+.*$/, "")
     .trim();
-
-  return candidate;
 }
 
-function extractLocation(text) {
-  const lines = String(text || "")
+function extractLocation(text = "") {
+  const lines = String(text)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -58,9 +54,9 @@ function extractLocation(text) {
         continue;
       }
 
-      const candidate = cleanLocationCandidate(match[1]);
-      if (candidate.length >= 3) {
-        return candidate;
+      const location = cleanLocationCandidate(match[1]);
+      if (location.length >= 3) {
+        return location;
       }
     }
   }
@@ -68,8 +64,8 @@ function extractLocation(text) {
   return "";
 }
 
-function extractOrganizer(text) {
-  const lines = String(text || "")
+function extractOrganizer(text = "") {
+  const lines = String(text)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -78,6 +74,7 @@ function extractOrganizer(text) {
     const match = line.match(
       /^(?:organizer|organiser|penyelenggara|hosted by|diselenggarakan oleh|oleh)\s*[:\-]\s*(.+)$/i,
     );
+
     if (match?.[1]) {
       return normalizeInlineText(match[1]);
     }
@@ -86,12 +83,12 @@ function extractOrganizer(text) {
   return "";
 }
 
-function extractEventDate(text) {
+function extractEventDate(text = "") {
   return extractEventDateFromText(text);
 }
 
-function buildTitle(text) {
-  const lines = String(text || "")
+function buildTitle(text = "") {
+  const lines = String(text)
     .split(/\r?\n/)
     .map((line) => normalizeInlineText(line))
     .filter(Boolean);
@@ -99,7 +96,9 @@ function buildTitle(text) {
   for (const line of lines) {
     if (
       /^#/.test(line) ||
-      /^(?:📍|lokasi|tempat|venue|location|📅|date|tanggal|jam|waktu)\b/i.test(line)
+      /^(?:📍|lokasi|tempat|venue|location|📅|date|tanggal|jam|waktu)\b/i.test(
+        line,
+      )
     ) {
       continue;
     }
@@ -112,35 +111,34 @@ function buildTitle(text) {
   return normalizeInlineText(text).slice(0, 120);
 }
 
-function buildDescription(text) {
-  return normalizeMultilineText(text);
-}
-
-function parseInstagramPost(href, caption, imgSrc) {
-  const postId = href.split("/").filter(Boolean).pop() || href;
+function parseInstagramPost(href, caption, imgSrc = "") {
   const normalizedCaption = normalizeMultilineText(caption);
 
   if (!normalizedCaption) {
     return null;
   }
 
-  const parsedEventDate = extractEventDate(normalizedCaption);
-  const title = buildTitle(normalizedCaption);
-  const description = buildDescription(normalizedCaption);
+  const postId =
+    String(href || "")
+      .split("/")
+      .filter(Boolean)
+      .pop() || String(href || "");
+  const sourceUrl = String(href || "").startsWith("/")
+    ? `https://www.instagram.com${href}`
+    : String(href || "");
+  const eventDate = extractEventDate(normalizedCaption);
 
   return {
     platform: "instagram",
     postId,
-    title,
-    date: parsedEventDate || new Date().toISOString().slice(0, 10),
-    eventDate: parsedEventDate,
+    title: buildTitle(normalizedCaption),
+    date: eventDate || new Date().toISOString().slice(0, 10),
+    eventDate,
     location: extractLocation(normalizedCaption),
     organizer: extractOrganizer(normalizedCaption),
-    description,
+    description: normalizedCaption,
     imageUrl: imgSrc || "",
-    sourceUrl: href.startsWith("/")
-      ? `https://www.instagram.com${href}`
-      : href,
+    sourceUrl,
   };
 }
 

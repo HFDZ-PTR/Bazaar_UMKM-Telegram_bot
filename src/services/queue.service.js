@@ -1,20 +1,17 @@
 // src/services/queue.service.js
 const PQueueModule = require("p-queue");
+const { CONFIG } = require("../config");
+
 const PQueue = PQueueModule.default || PQueueModule;
-const {
-  TELEGRAM_QUEUE_CONCURRENCY,
-  TELEGRAM_QUEUE_INTERVAL_CAP,
-  TELEGRAM_QUEUE_INTERVAL_MS,
-} = require("../config/constants");
 
 const queue = new PQueue({
-  concurrency: TELEGRAM_QUEUE_CONCURRENCY,
-  intervalCap: TELEGRAM_QUEUE_INTERVAL_CAP,
-  interval: TELEGRAM_QUEUE_INTERVAL_MS,
+  concurrency: CONFIG.telegramQueueConcurrency,
+  intervalCap: CONFIG.telegramQueueIntervalCap,
+  interval: CONFIG.telegramQueueIntervalMs,
   carryoverConcurrencyCount: true,
 });
 
-async function addJob(job) {
+function addJob(job) {
   return queue.add(job);
 }
 

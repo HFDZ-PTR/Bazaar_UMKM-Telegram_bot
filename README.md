@@ -1,131 +1,108 @@
 # umkm-bazaar-bot
 
-Production-ready Node.js bot that scrapes Instagram and TikTok hashtag pages for UMKM bazaar event posts, deduplicates them with file-based storage, forwards new events to Telegram, and exposes a public Express API.
+SQLite-backed Node.js bot for scraping Instagram and TikTok hashtag pages for UMKM bazaar event posts, forwarding new events to Telegram, and exposing a public REST API.
+
+## Overview
+
+`umkm-bazaar-bot` is built for operators who want new UMKM bazaar posts collected automatically without manually monitoring social media. The bot scrapes configured hashtags, normalizes event data, deduplicates results, stores records in SQLite, sends new findings to Telegram, and serves the same data through an Express API.
+
+The current architecture uses SQLite as the primary application datastore. JSON sidecar files are still used for browser cookies, Telegram target registration, Telegram update offsets, and optional debug HTML dumps.
 
 ## Stack
 
-- Node.js CommonJS
+- Node.js 18+
+- CommonJS modules
+- `dotenv`
+- `better-sqlite3`
 - `puppeteer-core`
 - `puppeteer-extra`
 - `puppeteer-extra-plugin-stealth`
 - `cheerio`
+- `express`
+- `cors`
+- `helmet`
+- `express-rate-limit`
 - `p-queue`
 - `p-retry`
 - `pino`
 - `pino-pretty`
-- `express`
-- `helmet`
-- `cors`
-- `express-rate-limit`
-- Telegram Bot API via native `fetch`
 - `zod`
-- `dotenv`
+- Native `fetch` for Telegram Bot API
 - `nodemon` for local development
 
 ## Features
 
-- Scrapes Instagram and TikTok hashtag pages for event posts.
-- Normalizes event data into a shared file-based format.
-- Deduplicates events using SHA-256 fingerprints of `platform:postId`.
-- Stores events in JSON files grouped by platform and event date.
-- Sends new events to one or more Telegram targets.
-- Discovers Telegram targets dynamically from `/start` messages.
-- Exposes a public REST API for querying saved events.
+- Scrapes Instagram and TikTok hashtag pages for UMKM bazaar announcements.
+- Rotates hashtags per scrape cycle using `shuffle`, `random`, or `all` selection modes.
+- Normalizes parsed posts into a shared event schema.
+- Deduplicates events using a SHA-256 fingerprint of `platform:postId`.
+- Stores events, scrape errors, and hashtag rotation state in SQLite.
+- Sends new events to one or more Telegram chats.
+- Registers Telegram targets dynamically from `/start` messages.
+- Exposes a public REST API for querying stored events.
 - Removes expired events automatically before each scrape cycle.
-- Supports running the API and bot separately or in one combined process.
+- Supports API-only, bot-only, combined, and single-run execution modes.
 
-## Setup
-
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Copy `.env.example` to `.env` and fill in your values.
-
-3. Make sure Chrome is installed and `CHROME_PATH` points to the executable.
-
-4. Start the API server:
-
-   ```bash
-   npm start
-   ```
-
-5. Start the bot worker:
-
-   ```bash
-   npm run bot
-   ```
-
-If you want both the API and bot worker in one process, set `RUN_BOT_WITH_API=true` and run:
-
-```bash
-npm start
-```
-
-## Development commands
-
-```bash
-npm start
-npm run bot
-npm run dev
-npm run dev:bot
-npm run run:once
-```
-
-- `npm start`: Start the API server.
-- `npm run bot`: Start the bot worker only.
-- `npm run dev`: Start the API server with `nodemon`.
-- `npm run dev:bot`: Start the bot worker with `nodemon`.
-- `npm run run:once`: Run a single bot cycle once, then exit.
-
-## Environment
-
-- `CHROME_PATH`: Chrome executable path.
-- `CHROME_PROFILE_DIR`: Browser profile directory used by Puppeteer.
-- `TELEGRAM_BOT_TOKEN`: Telegram bot token.
-- `TELEGRAM_CHAT_ID`: Optional fixed Telegram chat ID. If omitted, chats can self-register by sending `/start` to the bot.
-- `PORT`: API server port.
-- `API_KEY`: Optional API key required in the `x-api-key` header.
-- `RUN_BOT_WITH_API`: Set to `true` to start the bot worker with the API server.
-- `INSTAGRAM_USERNAME`: Optional Instagram username for credential login fallback.
-- `INSTAGRAM_PASSWORD`: Optional Instagram password for credential login fallback.
-- `INSTAGRAM_SESSIONID`: Optional Instagram `sessionid` cookie value.
-- `INSTAGRAM_COOKIE_JSON`: Optional raw JSON cookie payload for Instagram.
-- `INSTAGRAM_HASHTAGS`: Comma-separated Instagram hashtags to scan.
-- `TIKTOK_HASHTAGS`: Comma-separated TikTok hashtags to scan.
-- `SCRAPE_INTERVAL`: Scrape interval string such as `5m`, `1h`, or `1h25m`.
-- `LOG_LEVEL`: Pino log level.
-- `DEBUG_HTML_DUMP`: Set to `1` to write debug HTML into `data/debug/`.
-
-## Storage
+## Project structure
 
 ```text
-data/
-├── debug/
-├── events/
-├── logs/
-│   └── errors.json
-├── seen_ids.json
-├── telegram_targets.json
-└── telegram_updates_state.json
-
-cookies/
-├── instagram.json
-└── tiktok.json
+umkm-bazaar-bot/
+├── .env
+├── .env.example
+├── README.md
+├── package.json
+├── package-lock.json
+├── chrome-profiles/
+│   └── main/
+├── cookies/
+│   ├── instagram.json
+│   └── tiktok.json
+├── data/
+│   ├── app.db
+│   ├── debug/
+│   ├── telegram_targets.json
+│   └── telegram_updates_state.json
+├── scripts/
+│   └── migrate-json-to-sqlite.js
+└── src/
+    ├── app.js
+    ├── bot.js
+    ├── run-once.js
+    ├── api/
+    ├── config/
+    ├── formatters/
+    ├── parsers/
+    ├── scrapers/
+    ├── services/
+    └── utils/
 ```
 
-- `data/seen_ids.json`: Deduplication fingerprint state.
-- `data/events/<platform>/<YYYY-MM-DD>.json`: Stored event files grouped by platform and event date.
-- `data/logs/errors.json`: Persisted scraper failures.
-- `data/telegram_targets.json`: Registered Telegram chat targets.
-- `data/telegram_updates_state.json`: Stored Telegram update offset.
-- `cookies/instagram.json` and `cookies/tiktok.json`: Persisted browser cookies.
+## Data model
 
-Each saved event is normalized with `id`, `eventDate`, `scrapedAt`, and `createdAt`. Cleanup runs before every bot cycle and removes events whose parsed `eventDate` is at least 7 days old. Events without a valid parsed `eventDate` are retained.
+Main SQLite tables:
 
-## Run modes
+- `events`: normalized event records with unique constraint on `platform` and `post_id`.
+- `hashtag_rotation_state`: persisted queue and last-picked hashtags per platform.
+- `scrape_errors`: persisted scraper and processing failures.
+
+Typical `events` fields:
+
+- `id`
+- `platform`
+- `post_id`
+- `title`
+- `date`
+- `event_date`
+- `location`
+- `organizer`
+- `description`
+- `image_url`
+- `source_url`
+- `source_hashtag`
+- `scraped_at`
+- `created_at`
+
+## Execution modes
 
 ### API only
 
@@ -149,17 +126,98 @@ Starts the scrape worker only.
 RUN_BOT_WITH_API=true npm start
 ```
 
-Starts the API and bot in the same Node.js process.
+Starts the API server and bot worker in the same Node.js process.
 
-On Windows PowerShell:
+### Single run
 
-```powershell
-$env:RUN_BOT_WITH_API="true"; npm start
+```bash
+npm run run:once
 ```
 
-## Public API
+Runs one scrape-cleanup-notification cycle and exits.
 
-The API uses a consistent JSON response shape:
+## Setup
+
+1. Install dependencies.
+
+   ```bash
+   npm install
+   ```
+
+2. Copy `.env.example` to `.env`.
+
+3. Fill in the required environment values.
+
+4. Make sure Chrome is installed and `CHROME_PATH` points to the executable.
+
+5. Start the API, bot, or both depending on your deployment mode.
+
+## Environment variables
+
+```env
+CHROME_PATH=/usr/bin/google-chrome
+CHROME_PROFILE_DIR=./chrome-profiles/main
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+PORT=3000
+API_KEY=
+RUN_BOT_WITH_API=false
+INSTAGRAM_USERNAME=
+INSTAGRAM_PASSWORD=
+INSTAGRAM_SESSIONID=
+INSTAGRAM_COOKIE_JSON=
+INSTAGRAM_HASHTAGS=bazarumkm,umkmjakarta,bazarjakarta,callingtenant,infobazaar
+TIKTOK_HASHTAGS=bazarumkm,umkmjakarta,bazarjakarta,callingtenant,infobazaar
+HASHTAG_SELECTION_MODE=shuffle
+HASHTAGS_PER_CYCLE=2
+SCRAPE_INTERVAL=1h
+LOG_LEVEL=info
+DEBUG_HTML_DUMP=0
+```
+
+Variable notes:
+
+- `CHROME_PATH`: path to the Chrome or Chromium executable used by Puppeteer.
+- `CHROME_PROFILE_DIR`: browser profile directory for persisted browser session data.
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token.
+- `TELEGRAM_CHAT_ID`: optional fixed Telegram chat ID.
+- `PORT`: API port.
+- `API_KEY`: optional API key checked through the `x-api-key` header.
+- `RUN_BOT_WITH_API`: starts the bot worker inside the API process when `true`.
+- `INSTAGRAM_USERNAME` and `INSTAGRAM_PASSWORD`: optional credential fallback for Instagram login.
+- `INSTAGRAM_SESSIONID`: optional `sessionid` cookie value for Instagram.
+- `INSTAGRAM_COOKIE_JSON`: optional raw JSON cookie payload for Instagram.
+- `INSTAGRAM_HASHTAGS`: comma-separated Instagram hashtags.
+- `TIKTOK_HASHTAGS`: comma-separated TikTok hashtags.
+- `HASHTAG_SELECTION_MODE`: hashtag selection mode, `shuffle`, `random`, or `all`.
+- `HASHTAGS_PER_CYCLE`: number of hashtags selected per platform on each cycle.
+- `SCRAPE_INTERVAL`: interval string such as `5m`, `1h`, or `1h30m`.
+- `LOG_LEVEL`: Pino log level.
+- `DEBUG_HTML_DUMP=1`: enables debug HTML dumps into `data/debug/`.
+
+## Storage
+
+```text
+data/
+├── app.db
+├── debug/
+├── telegram_targets.json
+└── telegram_updates_state.json
+
+cookies/
+├── instagram.json
+└── tiktok.json
+```
+
+- `data/app.db`: main SQLite database for events, hashtag rotation state, and scrape errors.
+- `data/debug/`: optional HTML dumps written only when `DEBUG_HTML_DUMP=1`.
+- `data/telegram_targets.json`: registered Telegram chat targets discovered from `/start`.
+- `data/telegram_updates_state.json`: last processed Telegram update offset.
+- `cookies/*.json`: persisted browser cookies used by scrapers.
+
+## API
+
+The API returns a consistent JSON response shape:
 
 ```json
 {
@@ -177,7 +235,7 @@ The API uses a consistent JSON response shape:
 }
 ```
 
-If `API_KEY` is set, include it in the `x-api-key` header. If it is blank, the API is public.
+If `API_KEY` is set, send it in the `x-api-key` header. If it is empty, the API is public.
 
 ### Health
 
@@ -221,22 +279,40 @@ curl http://localhost:3000/api/events/<event-id>
 curl -H "x-api-key: your-key" http://localhost:3000/api/health
 ```
 
-## Event flow
+## Workflow
 
-1. A scraper loads an Instagram or TikTok hashtag page.
-2. The scraper extracts raw post or video card data.
-3. A parser normalizes the post into a shared event object.
-4. The event is validated with `zod`.
-5. The dedup layer hashes `platform:postId` and skips known items.
-6. New events are written to JSON storage.
-7. Telegram notifications are queued and sent.
-8. The API reads from the same stored event files.
+1. The bot selects a subset of hashtags for each platform based on the configured selection mode.
+2. A scraper opens the hashtag page with Puppeteer and loads cookies from disk.
+3. The scraper scrolls and extracts raw post or video cards.
+4. The parser normalizes the content into a shared event object.
+5. Validation runs before persistence and notification.
+6. Dedup checks whether the event already exists in SQLite.
+7. New events are written into the `events` table.
+8. Telegram notifications are queued and sent.
+9. The API reads the same stored events from SQLite.
+10. Cleanup removes expired events before the next cycle begins.
+
+## Development commands
+
+```bash
+npm start
+npm run bot
+npm run dev
+npm run dev:bot
+npm run run:once
+npm run migrate:sqlite
+```
+
+- `npm start`: start the API server.
+- `npm run bot`: start the bot worker.
+- `npm run dev`: start the API server with `nodemon`.
+- `npm run dev:bot`: start the bot worker with `nodemon`.
+- `npm run run:once`: execute one bot cycle and exit.
+- `npm run migrate:sqlite`: migrate legacy JSON event data into SQLite.
 
 ## Notes
 
-- Instagram scraping uses hashtag grids and may visit detail pages to recover full caption text.
-- TikTok scraping includes verification-wall detection and debug HTML dumping support.
-- Telegram messages are escaped for MarkdownV2 and queued to reduce rate-limit issues.
-- Telegram chat targets can be registered dynamically by sending `/start` to the bot.
-- Debug HTML dumps are disabled by default to keep runs faster; enable them with `DEBUG_HTML_DUMP=1` when needed.
-- The project is fully file-based and does not use a database or Redis.
+- Instagram scraping may need valid cookies or manual login recovery.
+- TikTok scraping may trigger verification or anti-bot walls depending on request patterns.
+- Telegram messages use MarkdownV2 formatting and are queued to reduce rate-limit issues.
+- The application uses SQLite for primary app data; JSON files are only sidecar storage for cookies, Telegram runtime state, and debug artifacts.

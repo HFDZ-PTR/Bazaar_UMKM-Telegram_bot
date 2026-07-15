@@ -4,11 +4,11 @@ const path = require("path");
 const Database = require("better-sqlite3");
 const { CONFIG } = require("../config");
 
-const DB_PATH = path.join(CONFIG.dataDir, "app.db");
+const dbPath = path.join(CONFIG.dataDir, "app.db");
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-const db = new Database(DB_PATH);
+const db = new Database(dbPath);
 
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
@@ -23,7 +23,7 @@ db.exec(`
     event_date TEXT,
     location TEXT DEFAULT '',
     organizer TEXT DEFAULT '',
-    description TEXT NOT NULL,
+    description TEXT DEFAULT '',
     image_url TEXT DEFAULT '',
     source_url TEXT NOT NULL,
     source_hashtag TEXT DEFAULT '',

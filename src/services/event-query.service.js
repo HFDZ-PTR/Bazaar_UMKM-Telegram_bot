@@ -7,16 +7,6 @@ const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
-const ALLOWED_SORT_FIELDS = new Set([
-  "eventDate",
-  "createdAt",
-  "scrapedAt",
-  "title",
-  "location",
-  "organizer",
-  "platform",
-]);
-
 const SORT_FIELD_MAP = {
   eventDate: "event_date",
   createdAt: "created_at",
@@ -27,14 +17,14 @@ const SORT_FIELD_MAP = {
   platform: "platform",
 };
 
-function clampPage(value) {
+function parsePage(value) {
   const page = Number.parseInt(String(value || DEFAULT_PAGE), 10);
-  return Number.isFinite(page) && page > 0 ? page : DEFAULT_PAGE;
+  return Number.isInteger(page) && page > 0 ? page : DEFAULT_PAGE;
 }
 
-function clampLimit(value) {
+function parseLimit(value) {
   const limit = Number.parseInt(String(value || DEFAULT_LIMIT), 10);
-  if (!Number.isFinite(limit) || limit <= 0) {
+  if (!Number.isInteger(limit) || limit <= 0) {
     return DEFAULT_LIMIT;
   }
 
@@ -68,16 +58,17 @@ function buildWhereClause(options = {}) {
   const conditions = [];
   const params = {};
 
-  const platform = String(options.platform || "").trim().toLowerCase();
-  const searchQuery = String(options.q || "").trim();
+  const platform = String(options.platform || "")
+    .trim()
+    .toLowerCase();
+  const keyword = String(options.q || "").trim();
 
   if (platform) {
     conditions.push("platform = @platform");
     params.platform = platform;
   }
 
-  if (searchQuery) {
-    params.search = `%${searchQuery}%`;
+  if (keyword) {
     conditions.push(`
       (
         title LIKE @search OR
@@ -86,6 +77,7 @@ function buildWhereClause(options = {}) {
         organizer LIKE @search
       )
     `);
+    params.search = `%${keyword}%`;
   }
 
   return {
@@ -95,14 +87,13 @@ function buildWhereClause(options = {}) {
 }
 
 function buildOrderClause(sortBy = "eventDate", order = "asc") {
-  const safeSortBy = ALLOWED_SORT_FIELDS.has(sortBy) ? sortBy : "eventDate";
-  const safeOrder = order === "desc" ? "DESC" : "ASC";
-  const column = SORT_FIELD_MAP[safeSortBy];
+  const column = SORT_FIELD_MAP[sortBy] || SORT_FIELD_MAP.eventDate;
+  const direction = String(order).toLowerCase() === "desc" ? "DESC" : "ASC";
 
   return {
-    sortBy: safeSortBy,
-    order: safeOrder.toLowerCase(),
-    orderSql: `ORDER BY ${column} ${safeOrder}, created_at DESC`,
+    sortBy: SORT_FIELD_MAP[sortBy] ? sortBy : "eventDate",
+    order: direction.toLowerCase(),
+    orderSql: `ORDER BY ${column} ${direction}, created_at DESC`,
   };
 }
 
@@ -120,48 +111,10 @@ function filterExpiredEvents(events, includeExpired) {
   });
 }
 
-async function loadAllEvents() {
-  const rows = db.prepare(`
-    SELECT
-      id,
-      platform,
-      post_id,
-      title,
-      date,
-      event_date,
-      location,
-      organizer,
-      description,
-      image_url,
-      source_url,
-      source_hashtag,
-      scraped_at,
-      created_at
-    FROM events
-    ORDER BY created_at DESC
-  `).all();
-
-  return rows.map(mapRowToEvent);
-}
-
-async function queryEvents(options = {}) {
-  const page = clampPage(options.page);
-  const limit = clampLimit(options.limit);
-  const offset = (page - 1) * limit;
-
-  const { whereSql, params } = buildWhereClause(options);
-  const { sortBy, order, orderSql } = buildOrderClause(
-    options.sortBy,
-    options.order,
-  );
-
-  const countRow = db.prepare(`
-    SELECT COUNT(*) AS total
-    FROM events
-    ${whereSql}
-  `).get(params);
-
-  const rows = db.prepare(`
+function fetchRows(whereSql, orderSql, params = {}) {
+  return db
+    .prepare(
+      `
     SELECT
       id,
       platform,
@@ -180,61 +133,35 @@ async function queryEvents(options = {}) {
     FROM events
     ${whereSql}
     ${orderSql}
-    LIMIT @limit OFFSET @offset
-  `).all({
-    ...params,
-    limit,
-    offset,
-  });
+  `,
+    )
+    .all(params);
+}
 
-  let data = rows.map(mapRowToEvent);
-  data = filterExpiredEvents(data, Boolean(options.includeExpired));
+async function loadAllEvents() {
+  return fetchRows("", "ORDER BY created_at DESC").map(mapRowToEvent);
+}
 
-  let total = countRow?.total || 0;
+async function queryEvents(options = {}) {
+  const page = parsePage(options.page);
+  const limit = parseLimit(options.limit);
+  const offset = (page - 1) * limit;
 
-  if (!options.includeExpired) {
-    const allFilteredRows = db.prepare(`
-      SELECT
-        id,
-        platform,
-        post_id,
-        title,
-        date,
-        event_date,
-        location,
-        organizer,
-        description,
-        image_url,
-        source_url,
-        source_hashtag,
-        scraped_at,
-        created_at
-      FROM events
-      ${whereSql}
-      ${orderSql}
-    `).all(params);
+  const { whereSql, params } = buildWhereClause(options);
+  const { sortBy, order, orderSql } = buildOrderClause(
+    options.sortBy,
+    options.order,
+  );
 
-    total = filterExpiredEvents(
-      allFilteredRows.map(mapRowToEvent),
-      false,
-    ).length;
+  const allEvents = filterExpiredEvents(
+    fetchRows(whereSql, orderSql, params).map(mapRowToEvent),
+    Boolean(options.includeExpired),
+  );
 
-    const pagedFilteredRows = allFilteredRows
-      .map(mapRowToEvent)
-      .filter((event) => {
-        if (!event.eventDate) {
-          return true;
-        }
-
-        return !isExpiredEventDate(event.eventDate, 7);
-      })
-      .slice(offset, offset + limit);
-
-    data = pagedFilteredRows;
-  }
-
+  const total = allEvents.length;
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const currentPage = Math.min(page, totalPages);
+  const data = allEvents.slice(offset, offset + limit);
 
   return {
     data,
@@ -250,7 +177,9 @@ async function queryEvents(options = {}) {
 }
 
 async function getEventById(id) {
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT
       id,
       platform,
@@ -269,16 +198,15 @@ async function getEventById(id) {
     FROM events
     WHERE id = ? OR post_id = ?
     LIMIT 1
-  `).get(id, id);
+  `,
+    )
+    .get(id, id);
 
   return mapRowToEvent(row);
 }
 
 async function getEventsByPlatform(platform, options = {}) {
-  return queryEvents({
-    ...options,
-    platform,
-  });
+  return queryEvents({ ...options, platform });
 }
 
 async function getUpcomingEvents(options = {}) {

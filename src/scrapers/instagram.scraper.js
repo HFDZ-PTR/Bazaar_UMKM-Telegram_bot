@@ -1,6 +1,5 @@
 // src/scrapers/instagram.scraper.js
 const { CONFIG } = require("../config");
-const { MAX_POSTS_PER_SCRAPE } = require("../config/constants");
 const {
   createPage,
   closePage,
@@ -14,25 +13,23 @@ const { retryOperation } = require("../utils/retry");
 const dedupService = require("../services/dedup.service");
 const logger = require("../utils/logger");
 
-const CONFIGURATION = {
-  baseUrl: "https://www.instagram.com/explore/tags/",
+const INSTAGRAM = {
+  hashtagBaseUrl: "https://www.instagram.com/explore/tags/",
   postBaseUrl: "https://www.instagram.com",
-  minCaptionLength: 30,
+  minAltCaptionLength: 30,
   maxDetailFetchesPerHashtag: 3,
 };
 
-function normalizeText(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeText(value = "") {
+  return String(value).replace(/\s+/g, " ").trim();
 }
 
-function buildPostUrl(href) {
-  return href.startsWith("http") ? href : `${CONFIGURATION.postBaseUrl}${href}`;
+function buildPostUrl(href = "") {
+  return href.startsWith("http") ? href : `${INSTAGRAM.postBaseUrl}${href}`;
 }
 
-function extractPostId(href) {
-  return href.split("/").filter(Boolean).pop() || href;
+function extractPostId(href = "") {
+  return String(href).split("/").filter(Boolean).pop() || String(href);
 }
 
 async function extractPostCaption(page) {
@@ -43,29 +40,26 @@ async function extractPostCaption(page) {
     )
     .catch(() => "");
 
-  const normalizedOgDescription = normalizeText(ogDescription);
-  if (normalizedOgDescription) {
-    const quotedMatch = normalizedOgDescription.match(/["“]([^"”]+)["”]/);
-    if (quotedMatch?.[1]) {
-      return normalizeText(quotedMatch[1]);
+  const normalizedOg = normalizeText(ogDescription);
+  if (normalizedOg) {
+    const quoted = normalizedOg.match(/["“]([^"”]+)["”]/);
+    if (quoted?.[1]) {
+      return normalizeText(quoted[1]);
     }
 
-    const colonIndex = normalizedOgDescription.indexOf(":");
+    const colonIndex = normalizedOg.indexOf(":");
     if (colonIndex >= 0) {
-      const afterColon = normalizeText(
-        normalizedOgDescription.slice(colonIndex + 1),
-      );
-      const cleaned = afterColon
+      const afterColon = normalizeText(normalizedOg.slice(colonIndex + 1))
         .replace(/^['"“”]+/, "")
         .replace(/['"“”]+$/, "")
         .replace(/\s+on Instagram.*$/i, "");
 
-      if (cleaned) {
-        return normalizeText(cleaned);
+      if (afterColon) {
+        return normalizeText(afterColon);
       }
     }
 
-    return normalizedOgDescription;
+    return normalizedOg;
   }
 
   const visibleCaption = await page
@@ -95,12 +89,12 @@ async function extractPostCaption(page) {
 }
 
 async function fetchCaptionFromDetailPage(page, href) {
-  const postUrl = buildPostUrl(href);
+  const url = buildPostUrl(href);
 
   return retryOperation(
     async () => {
       await delay(Math.floor(Math.random() * 250) + 150);
-      await page.goto(postUrl, {
+      await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
       });
@@ -112,168 +106,211 @@ async function fetchCaptionFromDetailPage(page, href) {
       await page.waitForSelector("article", { timeout: 8000 }).catch(() => {});
       return extractPostCaption(page);
     },
-    { retries: 1, minTimeout: 1500 },
+    {
+      retries: 1,
+      minTimeout: 1500,
+    },
   );
 }
 
-async function scrapeHashtag(
-  page,
-  hashtag,
-  remainingBudget = MAX_POSTS_PER_SCRAPE,
-) {
-  const url = `${CONFIGURATION.baseUrl}${encodeURIComponent(hashtag)}/`;
-  logger.info(`[SCAN] scraping hashtag #${hashtag}`);
-
-  await retryOperation(() =>
-    page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
-  );
-  await ensureAuthenticated(page, "instagram");
-
-  if (page.url().includes("instagram.com/accounts/login")) {
-    logger.warn("[WARN] redirected to login - retrying after auth");
-    await retryOperation(() =>
-      page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
-    );
-  }
-
-  await delay(Math.floor(Math.random() * 800) + 300);
-  await scrollPage(page, 3);
-
-  await page
-    .waitForSelector('a[href*="/p/"]', { timeout: 15000 })
-    .catch(() =>
-      logger.warn(`[WARN] no posts found for #${hashtag} within timeout`),
-    );
-
-  const hashtagHtml = await page.content();
-  await dumpHtml("instagram", hashtagHtml);
-
-  const rawPosts = await page.evaluate(() => {
-    const results = [];
+async function collectRawPosts(page) {
+  return page.evaluate(() => {
     const seen = new Set();
+    const posts = [];
 
-    document.querySelectorAll('a[href*="/p/"]').forEach((link) => {
+    for (const link of document.querySelectorAll('a[href*="/p/"]')) {
       const href = link.getAttribute("href") || "";
-      if (!href || seen.has(href)) return;
+      if (!href || seen.has(href)) {
+        continue;
+      }
+
       seen.add(href);
 
       const img = link.querySelector("img");
-      results.push({
+      posts.push({
         href,
-        imgSrc: img ? img.getAttribute("src") || "" : "",
-        altText: img ? img.getAttribute("alt") || "" : "",
+        imgSrc: img?.getAttribute("src") || "",
+        altText: img?.getAttribute("alt") || "",
       });
+    }
+
+    return posts;
+  });
+}
+
+async function dumpPageState(page, hashtag, state) {
+  try {
+    return await dumpHtml(`instagram-${hashtag}-${state}`, await page.content());
+  } catch (error) {
+    logger.warn({ hashtag, state, err: error }, "failed to dump instagram html");
+    return null;
+  }
+}
+
+async function scrapeHashtag(page, hashtag, remainingBudget = CONFIG.maxPostsPerScrape) {
+  const url = `${INSTAGRAM.hashtagBaseUrl}${encodeURIComponent(hashtag)}/`;
+
+  logger.info({ platform: "instagram", hashtag, url }, "scraping hashtag");
+
+  try {
+    await retryOperation(() =>
+      page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
+    );
+
+    await dumpPageState(page, hashtag, "after-goto");
+
+    await ensureAuthenticated(page, "instagram");
+
+    if (page.url().includes("instagram.com/accounts/login")) {
+      logger.warn({ hashtag, url }, "redirected to login, retrying hashtag page");
+
+      await retryOperation(() =>
+        page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
+      );
+
+      await dumpPageState(page, hashtag, "after-login-retry");
+    }
+
+    await delay(Math.floor(Math.random() * 800) + 300);
+    await scrollPage(page, 3);
+
+    await page.waitForSelector('a[href*="/p/"]', { timeout: 15000 }).catch(() => {
+      logger.warn({ hashtag, url }, "no instagram posts found within timeout");
     });
 
-    return results;
-  });
+    await dumpPageState(page, hashtag, "after-scroll");
 
-  const freshPosts = rawPosts.filter(({ href }) => {
-    const postId = extractPostId(href);
-    return !dedupService.has("instagram", postId);
-  });
+    const rawPosts = await collectRawPosts(page);
+    const freshPosts = rawPosts.filter((post) => {
+      return !dedupService.has("instagram", extractPostId(post.href));
+    });
 
-  const visitLimit = Math.max(0, Math.min(remainingBudget, freshPosts.length));
-  const postsToProcess = freshPosts.slice(0, visitLimit);
+    const postsToProcess = freshPosts.slice(0, Math.max(0, remainingBudget));
 
-  logger.info(
-    `[SCAN] found ${rawPosts.length} post links for #${hashtag}; fresh ${freshPosts.length}; processing ${postsToProcess.length}`,
-  );
+    logger.info(
+      {
+        platform: "instagram",
+        hashtag,
+        totalFound: rawPosts.length,
+        freshFound: freshPosts.length,
+        processing: postsToProcess.length,
+      },
+      "instagram posts collected",
+    );
 
-  if (postsToProcess.length === 0) {
-    return [];
-  }
+    if (postsToProcess.length === 0) {
+      await dumpPageState(page, hashtag, "no-fresh-posts");
+      return [];
+    }
 
-  const posts = [];
-  let detailFetchCount = 0;
+    const parsedPosts = [];
+    let detailFetchCount = 0;
 
-  for (const { href, imgSrc, altText } of postsToProcess) {
-    const normalizedAlt = normalizeText(altText);
+    for (const post of postsToProcess) {
+      const altCaption = normalizeText(post.altText);
 
-    if (normalizedAlt.length >= CONFIGURATION.minCaptionLength) {
-      const post = parseInstagramPost(href, normalizedAlt, imgSrc);
-      if (post) {
-        posts.push(post);
+      if (altCaption.length >= INSTAGRAM.minAltCaptionLength) {
+        const parsed = parseInstagramPost(post.href, altCaption, post.imgSrc);
+        if (parsed) {
+          parsedPosts.push(parsed);
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (detailFetchCount >= CONFIGURATION.maxDetailFetchesPerHashtag) {
-      logger.info(
-        `[SKIP] detail fetch limit reached for #${hashtag}, skipping ${href}`,
-      );
-      continue;
-    }
-
-    detailFetchCount += 1;
-
-    try {
-      const caption = await fetchCaptionFromDetailPage(page, href);
-      const post = parseInstagramPost(href, caption, imgSrc);
-      if (post) {
-        posts.push(post);
+      if (detailFetchCount >= INSTAGRAM.maxDetailFetchesPerHashtag) {
+        logger.info(
+          { hashtag, href: post.href },
+          "instagram detail fetch limit reached",
+        );
+        continue;
       }
-    } catch (error) {
-      logger.warn(
-        { err: error.message, href },
-        "[WARN] failed to load Instagram post detail",
-      );
+
+      detailFetchCount += 1;
+
+      try {
+        const caption = await fetchCaptionFromDetailPage(page, post.href);
+        const parsed = parseInstagramPost(post.href, caption, post.imgSrc);
+
+        if (parsed) {
+          parsedPosts.push(parsed);
+        }
+      } catch (error) {
+        logger.warn(
+          {
+            hashtag,
+            href: post.href,
+            err: error,
+          },
+          "failed to load instagram post detail",
+        );
+      }
     }
+
+    logger.info(
+      {
+        platform: "instagram",
+        hashtag,
+        parsed: parsedPosts.length,
+        withLocation: parsedPosts.filter((item) => item.location).length,
+        withEventDate: parsedPosts.filter((item) => item.eventDate).length,
+        detailFetches: detailFetchCount,
+      },
+      "instagram hashtag parsed",
+    );
+
+    return parsedPosts;
+  } catch (error) {
+    await dumpPageState(page, hashtag, "error");
+    throw error;
   }
-
-  const withLocation = posts.filter((p) => p.location).length;
-  const withDate = posts.filter(
-    (p) => p.date !== new Date().toISOString().slice(0, 10),
-  ).length;
-
-  logger.info(
-    `[DONE] parsed ${posts.length} posts | ${withLocation} with location | ${withDate} with event date | detail fetches ${detailFetchCount}`,
-  );
-
-  return posts.filter(Boolean);
 }
 
 async function scrapeInstagram(selectedHashtags = CONFIG.instagramHashtags) {
   const page = await createPage("instagram");
-  const events = [];
   const hashtags = Array.isArray(selectedHashtags)
     ? selectedHashtags.filter(Boolean)
     : CONFIG.instagramHashtags;
+  const events = [];
 
   try {
     for (const hashtag of hashtags) {
-      const remainingBudget = MAX_POSTS_PER_SCRAPE - events.length;
+      const remainingBudget = CONFIG.maxPostsPerScrape - events.length;
       if (remainingBudget <= 0) {
         break;
       }
 
       const posts = await scrapeHashtag(page, hashtag, remainingBudget);
-      const taggedPosts = posts.map((post) => ({
-        ...post,
-        sourceHashtag: hashtag,
-      }));
 
-      events.push(...taggedPosts);
+      events.push(
+        ...posts.map((post) => ({
+          ...post,
+          sourceHashtag: hashtag,
+        })),
+      );
 
-      if (events.length >= MAX_POSTS_PER_SCRAPE) {
+      if (events.length >= CONFIG.maxPostsPerScrape) {
         logger.info(
-          `[DONE] reached MAX_POSTS_PER_SCRAPE (${MAX_POSTS_PER_SCRAPE}), stopping`,
+          { limit: CONFIG.maxPostsPerScrape },
+          "instagram scrape limit reached",
         );
         break;
       }
     }
 
     logger.info(
-      { hashtags, totalEvents: events.length },
-      "[DONE] instagram scrape done",
+      {
+        hashtags,
+        totalEvents: events.length,
+      },
+      "instagram scrape finished",
     );
-    return events.slice(0, MAX_POSTS_PER_SCRAPE).filter(Boolean);
+
+    return events.slice(0, CONFIG.maxPostsPerScrape);
   } finally {
     await closePage(page, "instagram");
   }
 }
 
 module.exports = {
-  CONFIG: CONFIGURATION,
   scrapeInstagram,
 };

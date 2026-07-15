@@ -4,17 +4,33 @@ const { CONFIG } = require("./config");
 const app = require("./api/server");
 const botService = require("./services/bot.service");
 
-let server;
+let server = null;
+let isShuttingDown = false;
 
 async function shutdown(signal) {
-  logger.info({ signal }, "shutting down application");
-
-  if (server) {
-    await new Promise((resolve) => server.close(resolve));
-    server = null;
+  if (isShuttingDown) {
+    return;
   }
 
-  await botService.stop();
+  isShuttingDown = true;
+  logger.info({ signal }, "shutting down application");
+
+  try {
+    if (server) {
+      await new Promise((resolve) => server.close(resolve));
+      server = null;
+    }
+
+    await botService.stop();
+  } catch (error) {
+    logger.error({ err: error, signal }, "shutdown failed");
+  }
+}
+
+function registerShutdown(signal) {
+  process.once(signal, () => {
+    void shutdown(signal).finally(() => process.exit(0));
+  });
 }
 
 async function start() {
@@ -24,30 +40,22 @@ async function start() {
       runBotWithApi: CONFIG.runBotWithApi,
       scrapeIntervalHours: CONFIG.scrapeIntervalHours,
     },
-    "starting umkm-bazaar-bot api",
+    "starting api server",
   );
 
   server = await app.start();
 
   if (CONFIG.runBotWithApi) {
     void botService.start().catch((error) => {
-      logger.error(
-        { err: error },
-        "bot worker failed during combined startup",
-      );
+      logger.error({ err: error }, "bot worker failed during combined startup");
     });
   }
 
-  process.once("SIGINT", () => {
-    void shutdown("SIGINT").finally(() => process.exit(0));
-  });
-
-  process.once("SIGTERM", () => {
-    void shutdown("SIGTERM").finally(() => process.exit(0));
-  });
+  registerShutdown("SIGINT");
+  registerShutdown("SIGTERM");
 }
 
 start().catch((error) => {
-  logger.error({ error }, "application startup failed");
+  logger.error({ err: error }, "application startup failed");
   process.exit(1);
 });

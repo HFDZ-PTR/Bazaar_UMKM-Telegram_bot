@@ -33,7 +33,7 @@ const logger = pino(
     base: undefined,
     timestamp: pino.stdTimeFunctions.isoTime,
   },
-  transport, // plain JSON when piped to a file or CI
+  transport,
 );
 
 module.exports = logger;

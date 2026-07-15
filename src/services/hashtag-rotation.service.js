@@ -4,20 +4,7 @@ const db = require("./database.service");
 const { CONFIG } = require("../config");
 const logger = require("../utils/logger");
 
-function unique(items = []) {
-  return [...new Set(items.filter(Boolean))];
-}
-
-function shuffle(items = []) {
-  const arr = [...items];
-
-  for (let i = arr.length - 1; i > 0; i -= 1) {
-    const j = crypto.randomInt(0, i + 1);
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-
-  return arr;
-}
+const platforms = ["instagram", "tiktok"];
 
 const getStateStmt = db.prepare(`
   SELECT platform, queue_json, last_picked_json
@@ -44,6 +31,30 @@ const upsertStateStmt = db.prepare(`
     updated_at = excluded.updated_at
 `);
 
+function unique(items = []) {
+  return [...new Set(items.filter(Boolean))];
+}
+
+function shuffle(items = []) {
+  const list = [...items];
+
+  for (let i = list.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(0, i + 1);
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+
+  return list;
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function readPlatformState(platform) {
   const row = getStateStmt.get(platform);
 
@@ -51,24 +62,10 @@ function readPlatformState(platform) {
     return { queue: [], lastPicked: [] };
   }
 
-  let queue = [];
-  let lastPicked = [];
-
-  try {
-    queue = Array.isArray(JSON.parse(row.queue_json)) ? JSON.parse(row.queue_json) : [];
-  } catch {
-    queue = [];
-  }
-
-  try {
-    lastPicked = Array.isArray(JSON.parse(row.last_picked_json))
-      ? JSON.parse(row.last_picked_json)
-      : [];
-  } catch {
-    lastPicked = [];
-  }
-
-  return { queue, lastPicked };
+  return {
+    queue: parseJsonArray(row.queue_json),
+    lastPicked: parseJsonArray(row.last_picked_json),
+  };
 }
 
 function writePlatformState(platform, state) {
@@ -84,11 +81,13 @@ function writePlatformState(platform, state) {
 
 function pickRandom(tags, count, lastPicked = []) {
   const pool = unique(tags);
-  if (pool.length === 0) return [];
+  if (pool.length === 0) {
+    return [];
+  }
 
   const safeCount = Math.min(count, pool.length);
-  const lastSet = new Set(lastPicked);
-  const preferred = pool.filter((tag) => !lastSet.has(tag));
+  const lastPickedSet = new Set(lastPicked);
+  const preferred = pool.filter((tag) => !lastPickedSet.has(tag));
   const source = preferred.length >= safeCount ? preferred : pool;
 
   return shuffle(source).slice(0, safeCount);
@@ -96,6 +95,7 @@ function pickRandom(tags, count, lastPicked = []) {
 
 function pickFromQueue(tags, count, platformState = {}) {
   const source = unique(tags);
+
   if (source.length === 0) {
     return {
       picked: [],
@@ -104,7 +104,9 @@ function pickFromQueue(tags, count, platformState = {}) {
   }
 
   const safeCount = Math.min(count, source.length);
-  let queue = Array.isArray(platformState.queue) ? [...platformState.queue] : [];
+  let queue = Array.isArray(platformState.queue)
+    ? [...platformState.queue]
+    : [];
   const lastPicked = Array.isArray(platformState.lastPicked)
     ? platformState.lastPicked
     : [];
@@ -142,9 +144,6 @@ function pickFromQueue(tags, count, platformState = {}) {
 }
 
 function ensureSeedRows() {
-  const now = new Date().toISOString();
-  const platforms = ["instagram", "tiktok"];
-
   const insertSeedStmt = db.prepare(`
     INSERT INTO hashtag_rotation_state (
       platform,
@@ -160,11 +159,13 @@ function ensureSeedRows() {
     ON CONFLICT(platform) DO NOTHING
   `);
 
+  const now = new Date().toISOString();
+
   for (const platform of platforms) {
     insertSeedStmt.run({
       platform,
-      queue_json: JSON.stringify([]),
-      last_picked_json: JSON.stringify([]),
+      queue_json: "[]",
+      last_picked_json: "[]",
       updated_at: now,
     });
   }
@@ -183,25 +184,15 @@ async function selectCycleHashtags() {
   let tiktok = [];
 
   if (mode === "all") {
-    instagram = unique(CONFIG.instagramHashtags).slice(
-      0,
-      Math.min(count, unique(CONFIG.instagramHashtags).length),
-    );
-    tiktok = unique(CONFIG.tiktokHashtags).slice(
-      0,
-      Math.min(count, unique(CONFIG.tiktokHashtags).length),
-    );
+    instagram = unique(CONFIG.instagramHashtags).slice(0, count);
+    tiktok = unique(CONFIG.tiktokHashtags).slice(0, count);
   } else if (mode === "random") {
     instagram = pickRandom(
       CONFIG.instagramHashtags,
       count,
       instagramState.lastPicked,
     );
-    tiktok = pickRandom(
-      CONFIG.tiktokHashtags,
-      count,
-      tiktokState.lastPicked,
-    );
+    tiktok = pickRandom(CONFIG.tiktokHashtags, count, tiktokState.lastPicked);
 
     writePlatformState("instagram", { queue: [], lastPicked: instagram });
     writePlatformState("tiktok", { queue: [], lastPicked: tiktok });

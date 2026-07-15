@@ -56,73 +56,71 @@ function isValidYmd(year, month, day) {
 }
 
 function buildIsoDate(year, month, day) {
-  const yyyy = String(year);
-  const mm = String(month).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-
-  if (!isValidYmd(yyyy, mm, dd)) {
-    return null;
-  }
-
-  return `${yyyy}-${mm}-${dd}`;
+  const iso = `${String(year)}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const [y, m, d] = iso.split("-");
+  return isValidYmd(y, m, d) ? iso : null;
 }
 
 function parseEventDateString(value) {
-  if (!value || typeof value !== "string") {
+  if (typeof value !== "string" || !value.trim()) {
     return null;
   }
 
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
+  const text = value.trim();
 
-  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (isoMatch) {
     const iso = buildIsoDate(isoMatch[1], isoMatch[2], isoMatch[3]);
     return iso ? new Date(`${iso}T00:00:00.000Z`) : null;
   }
 
-  const slashMatch = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  const slashMatch = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (slashMatch) {
     const iso = buildIsoDate(slashMatch[3], slashMatch[2], slashMatch[1]);
     return iso ? new Date(`${iso}T00:00:00.000Z`) : null;
   }
 
-  const idMatch = trimmed.match(
+  const indoMatch = text.match(
     /^(\d{1,2})\s+(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)\s+(\d{4})$/i,
   );
-  if (idMatch) {
-    const month = MONTH_ID[idMatch[2].toLowerCase()];
-    const iso = buildIsoDate(idMatch[3], month, idMatch[1]);
+  if (indoMatch) {
+    const iso = buildIsoDate(
+      indoMatch[3],
+      MONTH_ID[indoMatch[2].toLowerCase()],
+      indoMatch[1],
+    );
     return iso ? new Date(`${iso}T00:00:00.000Z`) : null;
   }
 
   return null;
 }
 
-function extractEventDateFromText(text) {
-  const source = String(text || "")
-    .replace(/\s+/g, " ")
-    .trim();
+function extractEventDateFromText(text = "") {
+  const source = String(text).replace(/\s+/g, " ").trim();
   if (!source) {
     return null;
   }
 
-  const rangeSameMonthMatch = source.match(
+  const sameMonthRange = source.match(
     /(\d{1,2})\s*[-–]\s*(\d{1,2})\s+(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)\s+(\d{4})/i,
   );
-  if (rangeSameMonthMatch) {
-    const month = MONTH_ID[rangeSameMonthMatch[3].toLowerCase()];
-    return buildIsoDate(rangeSameMonthMatch[4], month, rangeSameMonthMatch[1]);
+  if (sameMonthRange) {
+    return buildIsoDate(
+      sameMonthRange[4],
+      MONTH_ID[sameMonthRange[3].toLowerCase()],
+      sameMonthRange[1],
+    );
   }
 
-  const singleIdMatch = source.match(
+  const indoSingle = source.match(
     /(\d{1,2})\s+(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember)\s+(\d{4})/i,
   );
-  if (singleIdMatch) {
-    const month = MONTH_ID[singleIdMatch[2].toLowerCase()];
-    return buildIsoDate(singleIdMatch[3], month, singleIdMatch[1]);
+  if (indoSingle) {
+    return buildIsoDate(
+      indoSingle[3],
+      MONTH_ID[indoSingle[2].toLowerCase()],
+      indoSingle[1],
+    );
   }
 
   const dmyMatch = source.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);

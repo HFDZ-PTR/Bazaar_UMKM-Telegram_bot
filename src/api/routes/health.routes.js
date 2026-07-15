@@ -7,21 +7,21 @@ const router = express.Router();
 
 router.get("/health", async (req, res, next) => {
   try {
-    const status = botService.getStatus();
+    const botStatus = botService.getStatus();
 
-    return sendSuccess(
+    sendSuccess(
       res,
       {
-        status: status.isRunning || status.lastScrapeAt ? "ok" : "starting",
+        status: botStatus.isRunning || botStatus.lastScrapeAt ? "ok" : "starting",
         uptime: process.uptime(),
-        lastScrapeAt: status.lastScrapeAt,
+        lastScrapeAt: botStatus.lastScrapeAt,
       },
       {
-        bot: status,
+        bot: botStatus,
       },
     );
   } catch (error) {
-    return next(error);
+    next(error);
   }
 });
 

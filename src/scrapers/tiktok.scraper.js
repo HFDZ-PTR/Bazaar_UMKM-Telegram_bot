@@ -1,6 +1,5 @@
 // src/scrapers/tiktok.scraper.js
 const { CONFIG } = require("../config");
-const { MAX_POSTS_PER_SCRAPE } = require("../config/constants");
 const {
   createPage,
   closePage,
@@ -13,8 +12,8 @@ const dedupService = require("../services/dedup.service");
 const logger = require("../utils/logger");
 const { parseTikTokVideo } = require("../parsers/tiktok.parser");
 
-const CONFIGURATION = {
-  baseUrl: "https://www.tiktok.com/tag/",
+const TIKTOK = {
+  hashtagBaseUrl: "https://www.tiktok.com/tag/",
   initialDelayMinMs: 3000,
   initialDelayMaxMs: 5000,
   scrollSteps: 4,
@@ -22,48 +21,53 @@ const CONFIGURATION = {
   maxDetailFetchesPerHashtag: 3,
 };
 
-const debugDumpState = new Set();
+const dumpedStates = new Set();
 
 function randomInitialDelay() {
   return (
     Math.floor(
-      Math.random() *
-        (CONFIGURATION.initialDelayMaxMs - CONFIGURATION.initialDelayMinMs + 1),
-    ) + CONFIGURATION.initialDelayMinMs
+      Math.random() * (TIKTOK.initialDelayMaxMs - TIKTOK.initialDelayMinMs + 1),
+    ) + TIKTOK.initialDelayMinMs
   );
 }
 
-function normalizeTikTokUrl(href) {
-  if (!href) return "";
-  if (href.startsWith("http://") || href.startsWith("https://")) return href;
-  if (href.startsWith("//")) return `https:${href}`;
-  if (href.startsWith("/")) return `https://www.tiktok.com${href}`;
+function normalizeTikTokUrl(href = "") {
+  if (!href) {
+    return "";
+  }
+
+  if (href.startsWith("http://") || href.startsWith("https://")) {
+    return href;
+  }
+
+  if (href.startsWith("//")) {
+    return `https:${href}`;
+  }
+
+  if (href.startsWith("/")) {
+    return `https://www.tiktok.com${href}`;
+  }
+
   return `https://www.tiktok.com/${href}`;
 }
 
-function normalizeText(value) {
-  return String(value || "")
-    .replace(/\r/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeText(value = "") {
+  return String(value).replace(/\r/g, "").replace(/\s+/g, " ").trim();
 }
 
-async function dumpHtmlOnce(page, hashtag, label) {
-  const key = `${hashtag}:${label}`;
-  if (debugDumpState.has(key)) {
-    return;
+async function dumpHtmlOnce(page, hashtag, state) {
+  const key = `${hashtag}:${state}`;
+  if (dumpedStates.has(key)) {
+    return null;
   }
 
-  debugDumpState.add(key);
+  dumpedStates.add(key);
 
   try {
-    const html = await page.content();
-    await dumpHtml(`tiktok-${hashtag}-${label}`, html);
+    return await dumpHtml(`tiktok-${hashtag}-${state}`, await page.content());
   } catch (error) {
-    logger.warn(
-      { hashtag, label, error: error?.message },
-      "failed to dump debug html",
-    );
+    logger.warn({ hashtag, state, err: error }, "failed to dump debug html");
+    return null;
   }
 }
 
@@ -105,7 +109,7 @@ async function isVerificationWall(page) {
 async function waitForHashtagResults(page) {
   try {
     await page.waitForSelector('div[data-e2e="challenge-item"]', {
-      timeout: CONFIGURATION.waitForCardsTimeoutMs,
+      timeout: TIKTOK.waitForCardsTimeoutMs,
     });
     return "cards";
   } catch (_) {}
@@ -127,7 +131,7 @@ async function waitForHashtagResults(page) {
   return "timeout";
 }
 
-async function fetchTikTokCaptionFromDetailPage(page, href) {
+async function fetchCaptionFromDetailPage(page, href) {
   const url = normalizeTikTokUrl(href);
 
   return retryOperation(
@@ -135,21 +139,20 @@ async function fetchTikTokCaptionFromDetailPage(page, href) {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
       await delay(2000);
 
-      const result = await page.evaluate(() => {
-        function normalizeDetailText(value) {
+      const detail = await page.evaluate(() => {
+        function clean(value) {
           return String(value || "")
             .replace(/\r/g, "")
             .replace(/\s+/g, " ")
             .trim();
         }
 
-        const currentUrl = location.href;
-        const title = document.title || "";
         const ogDescription =
           document
             .querySelector('meta[property="og:description"]')
             ?.getAttribute("content") || "";
-        const descriptionMeta =
+
+        const metaDescription =
           document
             .querySelector('meta[name="description"]')
             ?.getAttribute("content") || "";
@@ -162,131 +165,28 @@ async function fetchTikTokCaptionFromDetailPage(page, href) {
           "h1[data-e2e]",
         ];
 
-        const hits = selectors.map((selector) => ({
-          selector,
-          text: normalizeDetailText(
+        for (const selector of selectors) {
+          const text = clean(
             document.querySelector(selector)?.textContent || "",
-          ),
-        }));
+          );
+          if (text) {
+            return text;
+          }
+        }
 
-        const bodyText = normalizeDetailText(
-          document.body?.innerText || "",
-        ).slice(0, 500);
-
-        return {
-          currentUrl,
-          title: normalizeDetailText(title),
-          ogDescription: normalizeDetailText(ogDescription),
-          descriptionMeta: normalizeDetailText(descriptionMeta),
-          hits,
-          bodyText,
-        };
+        return clean(ogDescription) || clean(metaDescription) || "";
       });
 
-      logger.info(
-        {
-          href: url,
-          detailPage: result,
-        },
-        "tiktok detail page debug",
-      );
-
-      const selectorHit = result.hits.find((item) => item.text);
-      const caption =
-        selectorHit?.text ||
-        result.ogDescription ||
-        result.descriptionMeta ||
-        "";
-
-      return normalizeText(caption);
+      return normalizeText(detail);
     },
     { retries: 1, minTimeout: 1200 },
   );
 }
 
-async function scrapeHashtag(
-  page,
-  hashtag,
-  remainingBudget = MAX_POSTS_PER_SCRAPE,
-) {
-  const url = `${CONFIGURATION.baseUrl}${encodeURIComponent(hashtag)}`;
-  logger.info({ hashtag, url }, `[SCAN] scraping tiktok hashtag #${hashtag}`);
-
-  await retryOperation(() =>
-    page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }),
-  );
-
-  await delay(randomInitialDelay());
-
-  if (await isVerificationWall(page)) {
-    await dumpHtmlOnce(page, hashtag, "verify");
-
-    logger.warn(
-      { hashtag, url },
-      "tiktok verification wall detected before results load",
-    );
-    return [];
-  }
-
-  const readyState = await waitForHashtagResults(page);
-
-  if (readyState === "verify") {
-    await dumpHtmlOnce(page, hashtag, "verify");
-
-    logger.warn(
-      { hashtag, url },
-      "tiktok verification wall detected while waiting for results",
-    );
-    return [];
-  }
-
-  if (readyState === "error") {
-    await dumpHtmlOnce(page, hashtag, "failed-load");
-
-    logger.warn(
-      { hashtag, url, readyState },
-      'tiktok hashtag page returned "something went wrong"',
-    );
-    return [];
-  }
-
-  if (readyState !== "cards") {
-    await dumpHtmlOnce(page, hashtag, "timeout");
-
-    logger.warn(
-      { hashtag, url, readyState },
-      "tiktok hashtag page did not load challenge items in time",
-    );
-    return [];
-  }
-
-  await scrollPage(page, CONFIGURATION.scrollSteps);
-
-  if (await isVerificationWall(page)) {
-    await dumpHtmlOnce(page, hashtag, "verify-after-scroll");
-
-    logger.warn(
-      { hashtag, url },
-      "tiktok verification wall detected after scroll",
-    );
-    return [];
-  }
-
-  const signalsAfterScroll = await getPageSignals(page);
-
-  if (signalsAfterScroll.challengeItemCount === 0) {
-    await dumpHtmlOnce(page, hashtag, "no-cards");
-
-    logger.warn(
-      { hashtag, url, signalsAfterScroll },
-      "no challenge items found after successful load state",
-    );
-    return [];
-  }
-
-  const rawCards = await page.evaluate(() => {
-    const seen = new Set();
+async function collectRawCards(page) {
+  return page.evaluate(() => {
     const rows = [];
+    const seen = new Set();
 
     function normalizeCardText(value) {
       return String(value || "")
@@ -297,20 +197,15 @@ async function scrapeHashtag(
 
     function getStateCaptionMap() {
       const map = new Map();
-      const scripts = Array.from(document.querySelectorAll("script"));
 
-      for (const script of scripts) {
+      for (const script of document.querySelectorAll("script")) {
         const text = script.textContent || "";
-        if (!text) continue;
-        if (!text.includes('"desc"') || !text.includes('"id"')) continue;
-
-        const idMatches = [...text.matchAll(/"id":"(\d+)"/g)];
-        const descMatches = [...text.matchAll(/"desc":"(.*?)"/g)];
-
-        if (!idMatches.length || !descMatches.length) {
+        if (!text || !text.includes('"desc"') || !text.includes('"id"')) {
           continue;
         }
 
+        const idMatches = [...text.matchAll(/"id":"(\d+)"/g)];
+        const descMatches = [...text.matchAll(/"desc":"(.*?)"/g)];
         const pairCount = Math.min(idMatches.length, descMatches.length);
 
         for (let i = 0; i < pairCount; i += 1) {
@@ -335,14 +230,14 @@ async function scrapeHashtag(
     }
 
     function collectCaptionParts(item, anchor, descEl, stateCaption) {
-      const candidates = [];
+      const values = [];
 
-      const push = (value) => {
+      function push(value) {
         const text = normalizeCardText(value);
         if (text) {
-          candidates.push(text);
+          values.push(text);
         }
-      };
+      }
 
       push(descEl?.getAttribute("aria-label"));
       push(descEl?.textContent);
@@ -356,9 +251,14 @@ async function scrapeHashtag(
 
       for (const node of item.querySelectorAll("span")) {
         const text = normalizeCardText(node.textContent);
-        if (!text) continue;
-        if (text.length < 2) continue;
-        if (/^\d+[.,]?\d*\s*[KMB]?$/i.test(text)) continue;
+        if (!text || text.length < 2) {
+          continue;
+        }
+
+        if (/^\d+[.,]?\d*\s*[KMB]?$/i.test(text)) {
+          continue;
+        }
+
         if (
           /^(like|likes|reply|replies|view|views|followers?|following)$/i.test(
             text,
@@ -366,15 +266,19 @@ async function scrapeHashtag(
         ) {
           continue;
         }
-        candidates.push(text);
+
+        values.push(text);
       }
 
       const unique = [];
       const seenTexts = new Set();
 
-      for (const value of candidates) {
+      for (const value of values) {
         const key = value.toLowerCase();
-        if (seenTexts.has(key)) continue;
+        if (seenTexts.has(key)) {
+          continue;
+        }
+
         seenTexts.add(key);
         unique.push(value);
       }
@@ -388,14 +292,20 @@ async function scrapeHashtag(
       'div[data-e2e="challenge-item"]',
     )) {
       const anchor = item.querySelector('a[href*="/video/"]');
-      if (!anchor) continue;
+      if (!anchor) {
+        continue;
+      }
 
       const href = anchor.getAttribute("href") || anchor.href || "";
       const videoId = (href.match(/\/video\/(\d+)/) || [])[1] || "";
-      if (!videoId || seen.has(videoId)) continue;
+
+      if (!videoId || seen.has(videoId)) {
+        continue;
+      }
+
       seen.add(videoId);
 
-      const username =
+      const authorUsername =
         item
           .querySelector('[data-e2e="challenge-item-username"]')
           ?.textContent?.replace(/\s+/g, " ")
@@ -404,7 +314,6 @@ async function scrapeHashtag(
       const descEl = item.querySelector('[data-e2e="challenge-item-desc"]');
       const stateCaption = stateCaptionMap.get(videoId) || "";
       const caption = collectCaptionParts(item, anchor, descEl, stateCaption);
-
       const thumbnailUrl =
         item.querySelector("img")?.getAttribute("src") ||
         item.querySelector("img")?.src ||
@@ -413,7 +322,7 @@ async function scrapeHashtag(
       rows.push({
         href,
         videoId,
-        authorUsername: username,
+        authorUsername,
         caption,
         thumbnailUrl,
       });
@@ -421,140 +330,207 @@ async function scrapeHashtag(
 
     return rows;
   });
+}
 
-  const freshCards = rawCards
-    .map((card) => ({
-      ...card,
-      href: normalizeTikTokUrl(card.href),
-    }))
-    .filter(
-      (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
+async function scrapeHashtag(
+  page,
+  hashtag,
+  remainingBudget = CONFIG.maxPostsPerScrape,
+) {
+  const url = `${TIKTOK.hashtagBaseUrl}${encodeURIComponent(hashtag)}`;
+
+  logger.info({ platform: "tiktok", hashtag, url }, "scraping hashtag");
+
+  try {
+    await retryOperation(() =>
+      page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }),
     );
 
-  logger.info(
-    {
-      hashtag,
-      sampleCards: freshCards.slice(0, 3).map((card) => ({
-        videoId: card.videoId,
-        authorUsername: card.authorUsername,
-        caption: card.caption?.slice(0, 120) || "",
-      })),
-    },
-    "sample TikTok cards before parse",
-  );
+    await dumpHtmlOnce(page, hashtag, "after-goto");
 
-  const cardsToProcess = freshCards.slice(0, Math.max(0, remainingBudget));
+    await delay(randomInitialDelay());
 
-  if (cardsToProcess.length === 0) {
-    await dumpHtmlOnce(page, hashtag, "no-fresh-cards");
-
-    logger.warn(
-      {
-        hashtag,
-        url,
-        rawCount: rawCards.length,
-        freshCount: freshCards.length,
-      },
-      "no fresh TikTok cards found",
-    );
-    return [];
-  }
-
-  const posts = [];
-  let detailFetchCount = 0;
-
-  for (const card of cardsToProcess) {
-    try {
-      let enrichedCard = { ...card };
-
-      if (
-        !normalizeText(enrichedCard.caption) &&
-        detailFetchCount < CONFIGURATION.maxDetailFetchesPerHashtag
-      ) {
-        detailFetchCount += 1;
-
-        const detailCaption = await fetchTikTokCaptionFromDetailPage(
-          page,
-          enrichedCard.href,
-        );
-
-        if (detailCaption) {
-          enrichedCard.caption = detailCaption;
-        }
-      }
-
-      const parsed = parseTikTokVideo(enrichedCard);
-      if (parsed) {
-        posts.push(parsed);
-      }
-    } catch (error) {
-      logger.warn(
-        {
-          hashtag,
-          videoId: card.videoId,
-          href: card.href,
-          error: error?.message,
-        },
-        "failed to parse TikTok video card",
-      );
+    if (await isVerificationWall(page)) {
+      await dumpHtmlOnce(page, hashtag, "verify");
+      logger.warn({ hashtag, url }, "tiktok verification wall detected");
+      return [];
     }
+
+    const state = await waitForHashtagResults(page);
+
+    if (state === "verify") {
+      await dumpHtmlOnce(page, hashtag, "verify");
+      logger.warn(
+        { hashtag, url },
+        "tiktok verification wall detected while waiting",
+      );
+      return [];
+    }
+
+    if (state === "error") {
+      await dumpHtmlOnce(page, hashtag, "failed-load");
+      logger.warn({ hashtag, url }, "tiktok hashtag page returned error state");
+      return [];
+    }
+
+    if (state !== "cards") {
+      await dumpHtmlOnce(page, hashtag, "timeout");
+      logger.warn({ hashtag, url, state }, "tiktok hashtag page timed out");
+      return [];
+    }
+
+    await scrollPage(page, TIKTOK.scrollSteps);
+    await dumpHtmlOnce(page, hashtag, "after-scroll");
+
+    if (await isVerificationWall(page)) {
+      await dumpHtmlOnce(page, hashtag, "verify-after-scroll");
+      logger.warn(
+        { hashtag, url },
+        "tiktok verification wall detected after scroll",
+      );
+      return [];
+    }
+
+    const signals = await getPageSignals(page);
+    if (signals.challengeItemCount === 0) {
+      await dumpHtmlOnce(page, hashtag, "no-cards");
+      logger.warn(
+        { hashtag, url, signals },
+        "no tiktok cards found after scroll",
+      );
+      return [];
+    }
+
+    const rawCards = await collectRawCards(page);
+    const freshCards = rawCards
+      .map((card) => ({
+        ...card,
+        href: normalizeTikTokUrl(card.href),
+      }))
+      .filter(
+        (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
+      );
+
+    const cardsToProcess = freshCards.slice(0, Math.max(0, remainingBudget));
+
+    logger.info(
+      {
+        platform: "tiktok",
+        hashtag,
+        totalFound: rawCards.length,
+        freshFound: freshCards.length,
+        processing: cardsToProcess.length,
+      },
+      "tiktok cards collected",
+    );
+
+    if (cardsToProcess.length === 0) {
+      await dumpHtmlOnce(page, hashtag, "no-fresh-cards");
+      return [];
+    }
+
+    const posts = [];
+    let detailFetchCount = 0;
+
+    for (const card of cardsToProcess) {
+      try {
+        const enrichedCard = { ...card };
+
+        if (
+          !normalizeText(enrichedCard.caption) &&
+          detailFetchCount < TIKTOK.maxDetailFetchesPerHashtag
+        ) {
+          detailFetchCount += 1;
+          const detailCaption = await fetchCaptionFromDetailPage(
+            page,
+            enrichedCard.href,
+          );
+
+          if (detailCaption) {
+            enrichedCard.caption = detailCaption;
+          }
+        }
+
+        const parsed = parseTikTokVideo(enrichedCard);
+        if (parsed) {
+          posts.push(parsed);
+        }
+      } catch (error) {
+        logger.warn(
+          {
+            hashtag,
+            videoId: card.videoId,
+            href: card.href,
+            err: error,
+          },
+          "failed to parse tiktok card",
+        );
+      }
+    }
+
+    logger.info(
+      {
+        platform: "tiktok",
+        hashtag,
+        parsed: posts.length,
+        detailFetches: detailFetchCount,
+      },
+      "tiktok hashtag parsed",
+    );
+
+    return posts;
+  } catch (error) {
+    await dumpHtmlOnce(page, hashtag, "error");
+    throw error;
   }
-
-  logger.info(
-    {
-      hashtag,
-      extractedCards: rawCards.length,
-      freshCards: cardsToProcess.length,
-      parsed: posts.length,
-      detailFetches: detailFetchCount,
-    },
-    `[DONE] parsed ${posts.length} TikTok posts from #${hashtag}`,
-  );
-
-  return posts;
 }
 
 async function scrapeTikTok(selectedHashtags = CONFIG.tiktokHashtags) {
   const page = await createPage("tiktok");
-  const events = [];
   const hashtags = Array.isArray(selectedHashtags)
     ? selectedHashtags.filter(Boolean)
-    : [];
+    : CONFIG.tiktokHashtags;
+  const events = [];
 
   try {
     for (const hashtag of hashtags) {
-      const remainingBudget = MAX_POSTS_PER_SCRAPE - events.length;
+      const remainingBudget = CONFIG.maxPostsPerScrape - events.length;
       if (remainingBudget <= 0) {
         break;
       }
 
       const posts = await scrapeHashtag(page, hashtag, remainingBudget);
-      const taggedPosts = posts.map((post) => ({
-        ...post,
-        sourceHashtag: hashtag,
-      }));
 
-      events.push(...taggedPosts);
+      events.push(
+        ...posts.map((post) => ({
+          ...post,
+          sourceHashtag: hashtag,
+        })),
+      );
 
-      if (events.length >= MAX_POSTS_PER_SCRAPE) {
+      if (events.length >= CONFIG.maxPostsPerScrape) {
         logger.info(
-          `[DONE] reached MAX_POSTS_PER_SCRAPE (${MAX_POSTS_PER_SCRAPE}), stopping`,
+          { limit: CONFIG.maxPostsPerScrape },
+          "tiktok scrape limit reached",
         );
         break;
       }
     }
 
     logger.info(
-      { hashtags, totalEvents: events.length },
-      "[DONE] tiktok scrape done",
+      {
+        hashtags,
+        totalEvents: events.length,
+      },
+      "tiktok scrape finished",
     );
-    return events.slice(0, MAX_POSTS_PER_SCRAPE).filter(Boolean);
+
+    return events.slice(0, CONFIG.maxPostsPerScrape);
   } finally {
     await closePage(page, "tiktok");
   }
 }
 
 module.exports = {
-  CONFIG: CONFIGURATION,
   scrapeTikTok,
 };

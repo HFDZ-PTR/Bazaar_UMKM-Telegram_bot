@@ -1,88 +1,94 @@
 // src/scrapers/index.js
 const logger = require("../utils/logger");
+const { eventSchema } = require("../config");
 const { appendError, appendEvent } = require("../utils/storage.service");
 const dedupService = require("../services/dedup.service");
 const telegramService = require("../services/telegram.service");
-const { eventSchema } = require("../config");
 const { scrapeInstagram } = require("./instagram.scraper");
 const { scrapeTikTok } = require("./tiktok.scraper");
 
 async function processEvent(event) {
-  const result = eventSchema.safeParse(event);
-  if (!result.success) {
+  const parsed = eventSchema.safeParse(event);
+
+  if (!parsed.success) {
     logger.warn(
       {
-        issues: result.error.issues.map((issue) => issue.message),
-        postId: event?.postId,
+        postId: event?.postId || "",
+        platform: event?.platform || "",
+        issues: parsed.error.issues.map((issue) => issue.message),
       },
-      `[WARN] skipped invalid event`,
+      "skipped invalid event",
     );
     return false;
   }
 
-  const validatedEvent = result.data;
-  const isNew = await dedupService.isNew(
-    validatedEvent.platform,
-    validatedEvent.postId,
-  );
+  const item = parsed.data;
+  const isNew = await dedupService.isNew(item.platform, item.postId);
 
   if (!isNew) {
     logger.debug(
       {
-        platform: validatedEvent.platform,
-        postId: validatedEvent.postId,
-        sourceHashtag: validatedEvent.sourceHashtag,
+        platform: item.platform,
+        postId: item.postId,
+        sourceHashtag: item.sourceHashtag || "",
       },
-      `[SCAN] dup - skipping ${validatedEvent.postId}`,
+      "skipped duplicate event",
     );
     return false;
   }
 
-  const filePath = await appendEvent(validatedEvent);
+  const filePath = await appendEvent(item);
+
   logger.info(
     {
-      platform: validatedEvent.platform,
-      postId: validatedEvent.postId,
-      sourceHashtag: validatedEvent.sourceHashtag,
-      eventDate: validatedEvent.eventDate || validatedEvent.date,
-      location: validatedEvent.location || "",
+      platform: item.platform,
+      postId: item.postId,
+      sourceHashtag: item.sourceHashtag || "",
+      eventDate: item.eventDate || item.date || "",
+      location: item.location || "",
       filePath,
     },
-    `[OK] saved event`,
+    "event saved",
   );
 
-  await telegramService.sendEvent(validatedEvent);
+  await telegramService.sendEvent(item);
   return true;
 }
 
-async function runScraper(scraperName, scraper, hashtags = []) {
-  logger.info(
-    { scraperName, hashtags },
-    `[SCAN] running scraper: ${scraperName}`,
-  );
+async function runScraper(name, scraper, hashtags) {
+  logger.info({ scraper: name, hashtags }, "scraper started");
 
   try {
     const events = await scraper(hashtags);
     let savedCount = 0;
 
     for (const event of events) {
-      const wasSaved = await processEvent(event);
-      if (wasSaved) {
-        savedCount++;
+      if (await processEvent(event)) {
+        savedCount += 1;
       }
     }
 
     logger.info(
-      { scraperName, hashtags, savedCount, totalEvents: events.length },
-      `[DONE] ${scraperName} finished`,
+      {
+        scraper: name,
+        hashtags,
+        totalEvents: events.length,
+        savedCount,
+      },
+      "scraper finished",
     );
   } catch (error) {
     logger.error(
-      { err: error.message, scraperName, hashtags },
-      `[FAIL] scraper crashed`,
+      {
+        scraper: name,
+        hashtags,
+        err: error,
+      },
+      "scraper failed",
     );
+
     await appendError({
-      scraperName,
+      scraperName: name,
       hashtags,
       message: error.message,
       stack: error.stack,
@@ -110,4 +116,6 @@ async function runAllScrapers(selectedHashtags = {}) {
   );
 }
 
-module.exports = { runAllScrapers };
+module.exports = {
+  runAllScrapers,
+};

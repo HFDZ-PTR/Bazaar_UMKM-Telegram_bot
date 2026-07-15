@@ -3,33 +3,34 @@ const crypto = require("crypto");
 const { CONFIG } = require("../../config");
 const { sendError } = require("../response");
 
-function timingSafeEqual(a, b) {
-  const bufferA = Buffer.from(a);
-  const bufferB = Buffer.from(b);
-
-  if (bufferA.length !== bufferB.length) {
+function isSameApiKey(providedKey, expectedKey) {
+  if (typeof providedKey !== "string" || typeof expectedKey !== "string") {
     return false;
   }
 
-  return crypto.timingSafeEqual(bufferA, bufferB);
+  const provided = Buffer.from(providedKey);
+  const expected = Buffer.from(expectedKey);
+
+  if (provided.length !== expected.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(provided, expected);
 }
 
 function apiKeyMiddleware(req, res, next) {
   if (!CONFIG.apiKey) {
-    return next();
+    next();
+    return;
   }
 
-  const providedKey = req.get("x-api-key");
-  if (providedKey && timingSafeEqual(providedKey, CONFIG.apiKey)) {
-    return next();
+  const apiKey = req.get("x-api-key");
+  if (isSameApiKey(apiKey, CONFIG.apiKey)) {
+    next();
+    return;
   }
 
-  return sendError(
-    res,
-    401,
-    "Unauthorized",
-    "Missing or invalid x-api-key header",
-  );
+  sendError(res, 401, "Unauthorized", "Missing or invalid x-api-key header");
 }
 
 module.exports = apiKeyMiddleware;

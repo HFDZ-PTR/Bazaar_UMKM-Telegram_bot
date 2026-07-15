@@ -21,12 +21,12 @@ function getRetryAfter(body) {
 
 function isValidRemotePhotoUrl(value = "") {
   try {
-    const url = new URL(String(value || "").trim());
+    const url = new URL(String(value).trim());
     return (
       (url.protocol === "http:" || url.protocol === "https:") &&
       url.hostname.length > 0
     );
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -56,25 +56,29 @@ async function sendTelegramApiRequest(method, payload) {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload || {}),
     },
   );
 
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const retryAfterSeconds = response.status === 429 ? getRetryAfter(body) : 0;
+
+  if (!response.ok || body?.ok === false) {
+    const statusCode = response.status || 500;
+    const retryAfterSeconds = statusCode === 429 ? getRetryAfter(body) : 0;
+
     if (retryAfterSeconds > 0) {
       await delay(retryAfterSeconds * 1000);
     }
 
     const error = new Error(
-      body?.description ||
-        `Telegram request failed with status ${response.status}`,
+      body?.description || `Telegram request failed with status ${statusCode}`,
     );
+
     error.response = {
-      statusCode: response.status,
+      statusCode,
       body,
     };
+
     throw error;
   }
 
@@ -106,8 +110,9 @@ async function upsertTelegramTarget(chat, source = "runtime") {
   const normalized = normalizeChatTarget(chat, source);
 
   const nextTargets = targets.filter(
-    (target) => String(target.id) !== String(normalized.id),
+    (target) => String(target.id) !== normalized.id,
   );
+
   nextTargets.push(normalized);
 
   await saveTelegramTargets(nextTargets);
@@ -121,22 +126,25 @@ async function getTelegramTargetChats() {
   if (CONFIG.telegramChatId) {
     const envTarget = {
       id: String(CONFIG.telegramChatId),
-      type: "private",
+      type: "unknown",
       title: "",
       username: "",
       source: "env",
       registeredAt: null,
     };
+
     targets.push(envTarget);
     seen.add(envTarget.id);
   }
 
   const storedTargets = await getStoredTelegramTargets();
+
   for (const target of storedTargets) {
     const id = String(target?.id || "");
     if (!id || seen.has(id)) {
       continue;
     }
+
     targets.push({
       id,
       type: target.type || "",
@@ -145,6 +153,7 @@ async function getTelegramTargetChats() {
       source: target.source || "stored",
       registeredAt: target.registeredAt || null,
     });
+
     seen.add(id);
   }
 
@@ -156,6 +165,18 @@ async function getTelegramTargetChatIds() {
   return targets.map((target) => target.id);
 }
 
+async function requireTelegramChatIds() {
+  const chatIds = await getTelegramTargetChatIds();
+
+  if (chatIds.length === 0) {
+    throw new Error(
+      "Telegram chat ID is not configured. Send /start or any message in the target DM/group first, send a message in the target channel after adding the bot, or set TELEGRAM_CHAT_ID.",
+    );
+  }
+
+  return chatIds;
+}
+
 async function getTelegramUpdatesState() {
   return readJsonFile(CONFIG.telegramUpdatesStatePath, { offset: 0 });
 }
@@ -164,51 +185,138 @@ async function saveTelegramUpdatesState(offset) {
   await writeJsonFile(CONFIG.telegramUpdatesStatePath, { offset });
 }
 
+function isWebhookConflictError(error) {
+  const description = String(
+    error?.response?.body?.description || error?.message || "",
+  ).toLowerCase();
+
+  return description.includes(
+    "can't use getupdates method while webhook is active",
+  );
+}
+
+async function getTelegramWebhookInfo() {
+  const result = await sendTelegramApiRequest("getWebhookInfo", {});
+  return result?.result || {};
+}
+
+async function deleteTelegramWebhook(options = {}) {
+  const { dropPendingUpdates = false } = options;
+
+  return sendTelegramApiRequest("deleteWebhook", {
+    drop_pending_updates: dropPendingUpdates,
+  });
+}
+
+async function ensurePollingReady() {
+  try {
+    const webhookInfo = await getTelegramWebhookInfo();
+    const activeWebhookUrl = String(webhookInfo?.url || "").trim();
+
+    if (activeWebhookUrl) {
+      logger.warn(
+        {
+          webhookUrl: activeWebhookUrl,
+          pendingUpdateCount: webhookInfo?.pending_update_count || 0,
+        },
+        "telegram webhook is active, deleting webhook so getUpdates can be used",
+      );
+
+      await deleteTelegramWebhook({ dropPendingUpdates: false });
+    }
+  } catch (error) {
+    logger.warn(
+      {
+        error: error?.message,
+      },
+      "failed to verify or delete telegram webhook before polling",
+    );
+  }
+}
+
 async function getTelegramUpdates() {
   const state = await getTelegramUpdatesState();
 
-  const result = await sendTelegramApiRequest("getUpdates", {
-    offset: state.offset,
-    timeout: 0,
-    allowed_updates: ["message"],
-  });
+  try {
+    const result = await sendTelegramApiRequest("getUpdates", {
+      offset: state.offset,
+      timeout: 10,
+      allowed_updates: [
+        "message",
+        "channel_post",
+        "my_chat_member",
+        "chat_member",
+      ],
+    });
 
-  const updates = Array.isArray(result?.result) ? result.result : [];
-  let nextOffset = state.offset;
+    const updates = Array.isArray(result?.result) ? result.result : [];
+    let nextOffset = state.offset;
 
-  for (const update of updates) {
-    if (typeof update?.update_id === "number") {
-      nextOffset = Math.max(nextOffset, update.update_id + 1);
+    for (const update of updates) {
+      if (typeof update?.update_id === "number") {
+        nextOffset = Math.max(nextOffset, update.update_id + 1);
+      }
     }
-  }
 
-  if (nextOffset !== state.offset) {
-    await saveTelegramUpdatesState(nextOffset);
-  }
+    if (nextOffset !== state.offset) {
+      await saveTelegramUpdatesState(nextOffset);
+    }
 
-  return updates;
+    return updates;
+  } catch (error) {
+    if (isWebhookConflictError(error)) {
+      logger.warn(
+        "telegram getUpdates conflict detected, attempting to delete webhook",
+      );
+
+      await ensurePollingReady();
+
+      const retryResult = await sendTelegramApiRequest("getUpdates", {
+        offset: state.offset,
+        timeout: 10,
+        allowed_updates: [
+          "message",
+          "channel_post",
+          "my_chat_member",
+          "chat_member",
+        ],
+      });
+
+      const updates = Array.isArray(retryResult?.result)
+        ? retryResult.result
+        : [];
+
+      let nextOffset = state.offset;
+
+      for (const update of updates) {
+        if (typeof update?.update_id === "number") {
+          nextOffset = Math.max(nextOffset, update.update_id + 1);
+        }
+      }
+
+      if (nextOffset !== state.offset) {
+        await saveTelegramUpdatesState(nextOffset);
+      }
+
+      return updates;
+    }
+
+    throw error;
+  }
 }
 
 function isStartCommand(text = "") {
-  const value = text.trim();
-  return /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+.*)?$/.test(value);
+  return /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+.*)?$/.test(text.trim());
 }
 
-function extractStartChatRegistration(update) {
-  const message = update?.message;
-  const chat = message?.chat;
-  const text = message?.text;
+function extractChatFromMessageContainer(container) {
+  const chat = container?.chat;
 
-  if (!chat || !text) {
+  if (!chat) {
     return null;
   }
 
-  const supportedTypes = new Set(["private", "group", "supergroup"]);
-  if (!supportedTypes.has(chat.type)) {
-    return null;
-  }
-
-  if (!isStartCommand(text)) {
+  if (!["private", "group", "supergroup", "channel"].includes(chat.type)) {
     return null;
   }
 
@@ -220,17 +328,101 @@ function extractStartChatRegistration(update) {
   };
 }
 
+function extractChatFromMembershipUpdate(updatePart) {
+  const chat = updatePart?.chat;
+
+  if (!chat) {
+    return null;
+  }
+
+  if (!["private", "group", "supergroup", "channel"].includes(chat.type)) {
+    return null;
+  }
+
+  return {
+    id: chat.id,
+    type: chat.type,
+    title: chat.title || "",
+    username: chat.username || "",
+  };
+}
+
+function extractChatRegistration(update) {
+  const message = update?.message;
+  const channelPost = update?.channel_post;
+  const myChatMember = update?.my_chat_member;
+  const chatMember = update?.chat_member;
+
+  if (message) {
+    const chat = extractChatFromMessageContainer(message);
+    if (chat) {
+      return {
+        ...chat,
+        sourceEvent: isStartCommand(message?.text || "")
+          ? "message-start"
+          : "message",
+      };
+    }
+  }
+
+  if (channelPost) {
+    const chat = extractChatFromMessageContainer(channelPost);
+    if (chat) {
+      return {
+        ...chat,
+        sourceEvent: "channel-post",
+      };
+    }
+  }
+
+  if (myChatMember) {
+    const chat = extractChatFromMembershipUpdate(myChatMember);
+    if (chat) {
+      return {
+        ...chat,
+        sourceEvent: "my-chat-member",
+      };
+    }
+  }
+
+  if (chatMember) {
+    const chat = extractChatFromMembershipUpdate(chatMember);
+    if (chat) {
+      return {
+        ...chat,
+        sourceEvent: "chat-member",
+      };
+    }
+  }
+
+  return null;
+}
+
 async function syncTelegramTargetsFromUpdates() {
+  await ensurePollingReady();
+
   const updates = await getTelegramUpdates();
   const registeredTargets = [];
+  const seen = new Set();
 
   for (const update of updates) {
-    const chat = extractStartChatRegistration(update);
+    const chat = extractChatRegistration(update);
+
     if (!chat) {
       continue;
     }
 
-    const saved = await upsertTelegramTarget(chat, "telegram-start");
+    const dedupeKey = String(chat.id);
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+
+    const saved = await upsertTelegramTarget(
+      chat,
+      `telegram-${chat.sourceEvent}`,
+    );
     registeredTargets.push(saved);
   }
 
@@ -242,69 +434,49 @@ async function syncTelegramTargetsFromUpdates() {
           chatType: target.type,
           title: target.title,
           username: target.username,
+          source: target.source,
         })),
       },
-      "telegram targets registered from /start",
+      "telegram targets registered from updates",
     );
   }
 
   return registeredTargets;
 }
 
-async function sendTelegramMessageToChat(chatId, message) {
-  return sendTelegramApiRequest("sendMessage", {
-    chat_id: chatId,
-    text: message,
-    parse_mode: "MarkdownV2",
-    disable_web_page_preview: true,
-  });
-}
+async function sendToChats(builder) {
+  const chatIds = await requireTelegramChatIds();
+  const results = [];
 
-async function sendTelegramPhotoToChat(chatId, event) {
-  const caption = formatPhotoCaption(event, 220);
+  for (const chatId of chatIds) {
+    results.push(await builder(chatId));
+  }
 
-  return sendTelegramApiRequest("sendPhoto", {
-    chat_id: chatId,
-    photo: String(event.imageUrl || "").trim(),
-    caption,
-    parse_mode: "MarkdownV2",
-  });
+  return results;
 }
 
 async function sendTelegramMessage(message) {
-  const chatIds = await getTelegramTargetChatIds();
-
-  if (!chatIds.length) {
-    throw new Error(
-      "Telegram chat ID is not configured. Send /start in the target DM or group first, or set TELEGRAM_CHAT_ID.",
-    );
-  }
-
-  const results = [];
-  for (const chatId of chatIds) {
-    const result = await sendTelegramMessageToChat(chatId, message);
-    results.push(result);
-  }
-
-  return results;
+  return sendToChats((chatId) =>
+    sendTelegramApiRequest("sendMessage", {
+      chat_id: chatId,
+      text: message,
+      parse_mode: "MarkdownV2",
+      disable_web_page_preview: true,
+    }),
+  );
 }
 
 async function sendTelegramPhoto(event) {
-  const chatIds = await getTelegramTargetChatIds();
+  const caption = formatPhotoCaption(event, 220);
 
-  if (!chatIds.length) {
-    throw new Error(
-      "Telegram chat ID is not configured. Send /start in the target DM or group first, or set TELEGRAM_CHAT_ID.",
-    );
-  }
-
-  const results = [];
-  for (const chatId of chatIds) {
-    const result = await sendTelegramPhotoToChat(chatId, event);
-    results.push(result);
-  }
-
-  return results;
+  return sendToChats((chatId) =>
+    sendTelegramApiRequest("sendPhoto", {
+      chat_id: chatId,
+      photo: String(event.imageUrl || "").trim(),
+      caption,
+      parse_mode: "MarkdownV2",
+    }),
+  );
 }
 
 async function sendEvent(event) {
@@ -344,4 +516,7 @@ module.exports = {
   syncTelegramTargetsFromUpdates,
   getTelegramTargetChats,
   getTelegramTargetChatIds,
+  getTelegramWebhookInfo,
+  deleteTelegramWebhook,
+  ensurePollingReady,
 };

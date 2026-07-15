@@ -19,8 +19,15 @@ function sanitizeTelegramText(value = "") {
     .trim();
 }
 
-function escapeMarkdown(text = "") {
-  return sanitizeTelegramText(text)
+function normalizeText(value = "") {
+  return sanitizeTelegramText(value)
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function escapeMarkdown(value = "") {
+  return sanitizeTelegramText(value)
     .replace(/\\/g, "\\\\")
     .replace(/_/g, "\\_")
     .replace(/\*/g, "\\*")
@@ -42,156 +49,141 @@ function escapeMarkdown(text = "") {
     .replace(/!/g, "\\!");
 }
 
-function normalizeText(text = "") {
-  return sanitizeTelegramText(text)
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
+function truncateText(value = "", maxLength = 280) {
+  const text = normalizeText(value);
+  if (!text || text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function removeRepeatedTitle(description = "", title = "") {
+  const body = normalizeText(description);
+  const heading = normalizeText(title);
+
+  if (!body || !heading) {
+    return body;
+  }
+
+  const normalizedBody = body
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
-}
-
-function truncateText(text = "", maxLength = 280) {
-  const normalized = normalizeText(text);
-  if (!normalized || normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
-}
-
-function stripDuplicatedPrefix(description = "", title = "") {
-  const cleanDescription = normalizeText(description);
-  const cleanTitle = normalizeText(title);
-
-  if (!cleanDescription || !cleanTitle) {
-    return cleanDescription;
-  }
-
-  const normalizedDescription = cleanDescription
+  const normalizedHeading = heading
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 
-  const normalizedTitle = cleanTitle
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
-
-  if (!normalizedTitle) {
-    return cleanDescription;
+  if (!normalizedHeading) {
+    return body;
   }
 
-  if (normalizedDescription.startsWith(normalizedTitle)) {
-    return cleanDescription.slice(cleanTitle.length).trim();
+  if (normalizedBody.startsWith(normalizedHeading)) {
+    return body.slice(heading.length).trim();
   }
 
-  return cleanDescription;
+  return body;
 }
 
-function pushLine(lines, value) {
+function addLine(lines, value) {
   if (value && String(value).trim()) {
     lines.push(value);
   }
 }
 
-function pushBlankLine(lines) {
+function addSpacer(lines) {
   if (lines.length > 0 && lines[lines.length - 1] !== "") {
     lines.push("");
   }
 }
 
-function formatTikTokLines(event, options = {}) {
-  const organizer = normalizeText(event.organizer || "");
-  const eventDate = event.eventDate || event.date || "";
+function buildTikTokMessage(event, options = {}) {
   const description = options.truncateDescription
-    ? truncateText(event.description || "", options.maxDescriptionLength || 220)
-    : normalizeText(event.description || "");
+    ? truncateText(event.description, options.maxDescriptionLength || 220)
+    : normalizeText(event.description);
 
   const lines = [];
-  pushLine(lines, `TikTok post by ${escapeMarkdown(organizer || "unknown")}`);
-  pushLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
 
-  if (eventDate) {
-    pushLine(lines, `Date: ${escapeMarkdown(eventDate)}`);
+  addLine(
+    lines,
+    `TikTok post by ${escapeMarkdown(event.organizer || "unknown")}`,
+  );
+  addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
+
+  if (event.eventDate || event.date) {
+    addLine(lines, `Date: ${escapeMarkdown(event.eventDate || event.date)}`);
   }
 
   if (event.location) {
-    pushLine(lines, `Location: ${escapeMarkdown(event.location)}`);
+    addLine(lines, `Location: ${escapeMarkdown(event.location)}`);
   }
 
   if (description) {
-    pushBlankLine(lines);
-    pushLine(lines, escapeMarkdown(description));
+    addSpacer(lines);
+    addLine(lines, escapeMarkdown(description));
   }
 
   if (event.sourceUrl) {
-    pushBlankLine(lines);
-    pushLine(lines, `Source: ${escapeMarkdown(event.sourceUrl)}`);
+    addSpacer(lines);
+    addLine(lines, `Source: ${escapeMarkdown(event.sourceUrl)}`);
   }
 
-  return lines;
+  return lines.join("\n");
 }
 
-function formatDefaultLines(event, options = {}) {
-  const eventDate = event.eventDate || event.date || "";
+function buildDefaultMessage(event, options = {}) {
   const rawDescription = options.truncateDescription
-    ? truncateText(event.description || "", options.maxDescriptionLength || 220)
-    : normalizeText(event.description || "");
+    ? truncateText(event.description, options.maxDescriptionLength || 220)
+    : normalizeText(event.description);
 
-  const description = stripDuplicatedPrefix(rawDescription, event.title || "");
+  const description = removeRepeatedTitle(rawDescription, event.title);
   const lines = [];
 
-  pushLine(lines, `*${escapeMarkdown(event.title || "")}*`);
-  pushLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
+  addLine(lines, `*${escapeMarkdown(event.title || "")}*`);
+  addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
 
-  if (eventDate) {
-    pushLine(lines, `Date: ${escapeMarkdown(eventDate)}`);
+  if (event.eventDate || event.date) {
+    addLine(lines, `Date: ${escapeMarkdown(event.eventDate || event.date)}`);
   }
 
   if (event.location) {
-    pushLine(lines, `Location: ${escapeMarkdown(event.location)}`);
+    addLine(lines, `Location: ${escapeMarkdown(event.location)}`);
   }
 
   if (event.organizer) {
-    pushLine(lines, `Organizer: ${escapeMarkdown(event.organizer)}`);
+    addLine(lines, `Organizer: ${escapeMarkdown(event.organizer)}`);
   }
 
   if (description) {
-    pushBlankLine(lines);
-    pushLine(lines, escapeMarkdown(description));
+    addSpacer(lines);
+    addLine(lines, escapeMarkdown(description));
   }
 
   if (event.sourceUrl) {
-    pushBlankLine(lines);
-    pushLine(lines, `Source: ${escapeMarkdown(event.sourceUrl)}`);
+    addSpacer(lines);
+    addLine(lines, `Source: ${escapeMarkdown(event.sourceUrl)}`);
   }
 
-  return lines;
+  return lines.join("\n");
 }
 
 function formatEventMessage(event) {
-  const platform = String(event.platform || "").toLowerCase();
-
-  if (platform === "tiktok") {
-    return formatTikTokLines(event).join("\n");
-  }
-
-  return formatDefaultLines(event).join("\n");
+  return String(event.platform || "").toLowerCase() === "tiktok"
+    ? buildTikTokMessage(event)
+    : buildDefaultMessage(event);
 }
 
 function formatPhotoCaption(event, maxDescriptionLength = 220) {
-  const platform = String(event.platform || "").toLowerCase();
-
-  if (platform === "tiktok") {
-    return formatTikTokLines(event, {
-      truncateDescription: true,
-      maxDescriptionLength,
-    }).join("\n");
-  }
-
-  return formatDefaultLines(event, {
-    truncateDescription: true,
-    maxDescriptionLength,
-  }).join("\n");
+  return String(event.platform || "").toLowerCase() === "tiktok"
+    ? buildTikTokMessage(event, {
+        truncateDescription: true,
+        maxDescriptionLength,
+      })
+    : buildDefaultMessage(event, {
+        truncateDescription: true,
+        maxDescriptionLength,
+      });
 }
 
 module.exports = {

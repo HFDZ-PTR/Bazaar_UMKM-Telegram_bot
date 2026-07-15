@@ -1,18 +1,34 @@
 // src/utils/html.dump.js
 const fs = require("fs").promises;
 const path = require("path");
-const { ensureDirectory } = require("./storage.service");
 const { CONFIG } = require("../config");
+const { ensureDirectory } = require("./storage.service");
+const logger = require("./logger");
 
-async function dumpHtml(platform, html) {
-  if (process.env.DEBUG_HTML_DUMP !== "1") {
+function sanitizeDumpName(value) {
+  return String(value || "debug")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "debug";
+}
+
+async function dumpHtml(name, html) {
+  if (String(process.env.DEBUG_HTML_DUMP || "").trim() !== "1") {
     return null;
   }
 
-  const debugDir = path.join(CONFIG.dataDir, "debug");
-  const filePath = path.join(debugDir, `${platform}-latest.html`);
+  const safeName = sanitizeDumpName(name);
+  const filePath = path.join(
+    CONFIG.dataDir,
+    "debug",
+    `${safeName}.html`,
+  );
+
   await ensureDirectory(filePath);
-  await fs.writeFile(filePath, html, "utf8");
+  await fs.writeFile(filePath, String(html || ""), "utf8");
+
+  logger.info({ filePath, dumpName: safeName }, "html dump saved");
   return filePath;
 }
 
