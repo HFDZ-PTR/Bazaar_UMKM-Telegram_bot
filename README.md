@@ -170,6 +170,7 @@ INSTAGRAM_HASHTAGS=bazarumkm,umkmjakarta,bazarjakarta,callingtenant,infobazaar
 TIKTOK_HASHTAGS=bazarumkm,umkmjakarta,bazarjakarta,callingtenant,infobazaar
 HASHTAG_SELECTION_MODE=shuffle
 HASHTAGS_PER_CYCLE=2
+MAX_POSTS_PER_SCRAPE=3
 SCRAPE_INTERVAL=1h
 LOG_LEVEL=info
 DEBUG_HTML_DUMP=0
@@ -191,6 +192,7 @@ Variable notes:
 - `TIKTOK_HASHTAGS`: comma-separated TikTok hashtags.
 - `HASHTAG_SELECTION_MODE`: hashtag selection mode, `shuffle`, `random`, or `all`.
 - `HASHTAGS_PER_CYCLE`: number of hashtags selected per platform on each cycle.
+- `MAX_POSTS_PER_SCRAPE`: maximum number of posts processed per hashtag scrape.
 - `SCRAPE_INTERVAL`: interval string such as `5m`, `1h`, or `1h30m`.
 - `LOG_LEVEL`: Pino log level.
 - `DEBUG_HTML_DUMP=1`: enables debug HTML dumps into `data/debug/`.

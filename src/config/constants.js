@@ -28,7 +28,6 @@ const SCRAPER_DEFAULTS = {
   scrollSteps: 8,
   scrollDelayMs: 1500,
   networkTimeoutMs: 45000,
-  maxPostsPerScrape: 1,
 };
 
 const TELEGRAM_DEFAULTS = {

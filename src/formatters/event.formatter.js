@@ -1,4 +1,4 @@
-// src/formatters/event.formatter.js
+// src/formatters/event.formatter.js — label pesan dalam Bahasa Indonesia
 function toWellFormedText(value = "") {
   const text = String(value ?? "");
 
@@ -98,6 +98,23 @@ function addSpacer(lines) {
   }
 }
 
+function formatTanggal(value = "") {
+  const text = String(value || "").trim();
+
+  if (!text) {
+    return "";
+  }
+
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return text;
+  }
+
+  const [, tahun, bulan, hari] = match;
+  return `${hari}-${bulan}-${tahun}`;
+}
+
 function buildTikTokMessage(event, options = {}) {
   const description = options.truncateDescription
     ? truncateText(event.description, options.maxDescriptionLength || 220)
@@ -107,16 +124,21 @@ function buildTikTokMessage(event, options = {}) {
 
   addLine(
     lines,
-    `TikTok post by ${escapeMarkdown(event.organizer || "unknown")}`,
+    `Postingan TikTok oleh ${escapeMarkdown(event.organizer || "tidak diketahui")}`,
   );
   addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
 
   if (event.eventDate || event.date) {
-    addLine(lines, `Date: ${escapeMarkdown(event.eventDate || event.date)}`);
+    addLine(
+      lines,
+      `Tanggal: ${escapeMarkdown(
+        formatTanggal(event.eventDate || event.date),
+      )}`,
+    );
   }
 
   if (event.location) {
-    addLine(lines, `Location: ${escapeMarkdown(event.location)}`);
+    addLine(lines, `Lokasi: ${escapeMarkdown(event.location)}`);
   }
 
   if (description) {
@@ -126,7 +148,7 @@ function buildTikTokMessage(event, options = {}) {
 
   if (event.sourceUrl) {
     addSpacer(lines);
-    addLine(lines, `Source: ${escapeMarkdown(event.sourceUrl)}`);
+    addLine(lines, `Sumber: ${escapeMarkdown(event.sourceUrl)}`);
   }
 
   return lines.join("\n");
@@ -144,15 +166,20 @@ function buildDefaultMessage(event, options = {}) {
   addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
 
   if (event.eventDate || event.date) {
-    addLine(lines, `Date: ${escapeMarkdown(event.eventDate || event.date)}`);
+    addLine(
+      lines,
+      `Tanggal: ${escapeMarkdown(
+        formatTanggal(event.eventDate || event.date),
+      )}`,
+    );
   }
 
   if (event.location) {
-    addLine(lines, `Location: ${escapeMarkdown(event.location)}`);
+    addLine(lines, `Lokasi: ${escapeMarkdown(event.location)}`);
   }
 
   if (event.organizer) {
-    addLine(lines, `Organizer: ${escapeMarkdown(event.organizer)}`);
+    addLine(lines, `Penyelenggara: ${escapeMarkdown(event.organizer)}`);
   }
 
   if (description) {
@@ -162,7 +189,7 @@ function buildDefaultMessage(event, options = {}) {
 
   if (event.sourceUrl) {
     addSpacer(lines);
-    addLine(lines, `Source: ${escapeMarkdown(event.sourceUrl)}`);
+    addLine(lines, `Sumber: ${escapeMarkdown(event.sourceUrl)}`);
   }
 
   return lines.join("\n");
@@ -190,6 +217,7 @@ module.exports = {
   escapeMarkdown,
   formatEventMessage,
   formatPhotoCaption,
+  formatTanggal,
   sanitizeTelegramText,
   toWellFormedText,
 };

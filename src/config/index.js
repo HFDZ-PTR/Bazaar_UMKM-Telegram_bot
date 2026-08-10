@@ -88,6 +88,7 @@ const envSchema = z.object({
     .default("shuffle"),
 
   HASHTAGS_PER_CYCLE: z.coerce.number().int().positive().default(2),
+  MAX_POSTS_PER_SCRAPE: z.coerce.number().int().positive().default(3),
   SCRAPE_INTERVAL: z.string().optional().default("4h"),
 });
 
@@ -143,7 +144,7 @@ const CONFIG = {
   scraperScrollSteps: SCRAPER_DEFAULTS.scrollSteps,
   scraperScrollDelayMs: SCRAPER_DEFAULTS.scrollDelayMs,
   scraperNetworkTimeoutMs: SCRAPER_DEFAULTS.networkTimeoutMs,
-  maxPostsPerScrape: SCRAPER_DEFAULTS.maxPostsPerScrape,
+  maxPostsPerScrape: env.MAX_POSTS_PER_SCRAPE,
 
   telegramQueueIntervalMs: TELEGRAM_DEFAULTS.queueIntervalMs,
   telegramQueueIntervalCap: TELEGRAM_DEFAULTS.queueIntervalCap,
