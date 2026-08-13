@@ -6,7 +6,7 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 
 const { CONFIG } = require("../config");
 const logger = require("../utils/logger");
-const { ensureDirectory } = require("../utils/storage.service");
+const { ensureDirectory } = require("./storage.service");
 
 puppeteer.use(StealthPlugin());
 

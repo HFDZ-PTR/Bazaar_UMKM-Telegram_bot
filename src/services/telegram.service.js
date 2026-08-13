@@ -8,6 +8,7 @@ const {
   formatPhotoCaption,
 } = require("../formatters/event.formatter");
 const { retryOperation } = require("../utils/retry");
+const { isExpiredEventDate } = require("../utils/date");
 const logger = require("../utils/logger");
 
 function delay(ms) {
@@ -479,7 +480,41 @@ async function sendTelegramPhoto(event) {
   );
 }
 
+/**
+ * Batas toleransi: kalau eventDate sudah lewat lebih dari N hari dari HARI INI,
+ * event dianggap "stale" — kemungkinan besar caption organizer typo tahun atau
+ * reuse flyer lama (contoh nyata: caption bertuliskan "29-08-2025" padahal
+ * di-scrape tanggal 2026). Event tetap disimpan ke SQLite oleh storage layer
+ * (fungsi ini TIDAK mengubah database), tapi tidak dikirim sebagai notifikasi
+ * baru ke Telegram karena akan membingungkan user ("post baru" tapi tanggalnya
+ * sudah lewat setahun).
+ *
+ * Kalau eventDate tidak diketahui (null, misal caption TikTok kosong), event
+ * tetap dianggap layak kirim karena kita tidak punya dasar untuk menilai basi.
+ */
+const TELEGRAM_STALE_GRACE_DAYS = 3;
+
+function isStaleEventDate(event) {
+  if (!event.eventDate) {
+    return false;
+  }
+
+  return isExpiredEventDate(event.eventDate, TELEGRAM_STALE_GRACE_DAYS);
+}
+
 async function sendEvent(event) {
+  if (isStaleEventDate(event)) {
+    logger.warn(
+      {
+        platform: event.platform,
+        postId: event.postId,
+        eventDate: event.eventDate,
+      },
+      "skip telegram delivery: eventDate already expired, likely stale caption",
+    );
+    return { skipped: true, reason: "stale-event-date" };
+  }
+
   const message = formatEventMessage(event);
 
   return addJob(() =>

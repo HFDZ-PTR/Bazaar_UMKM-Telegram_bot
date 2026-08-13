@@ -18,7 +18,8 @@ const TIKTOK = {
   initialDelayMaxMs: 5000,
   scrollSteps: 4,
   waitForCardsTimeoutMs: 15000,
-  maxDetailFetchesPerHashtag: 3,
+  maxDetailFetchesPerHashtag: 12,
+  detailFetchDelayMs: 1500,
 };
 
 const dumpedStates = new Set();
@@ -401,7 +402,12 @@ async function scrapeHashtag(
       return [];
     }
 
-    const rawCards = await collectRawCards(page);
+    const rawCardsAll = await collectRawCards(page);
+
+    // Batasi berdasarkan MAX_POSTS_PER_SCRAPE dari .env.
+    // remainingBudget adalah sisa kuota pada platform ini.
+    const rawCards = rawCardsAll.slice(0, Math.max(0, remainingBudget));
+
     const freshCards = rawCards
       .map((card) => ({
         ...card,
@@ -411,7 +417,8 @@ async function scrapeHashtag(
         (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
       );
 
-    const cardsToProcess = freshCards.slice(0, Math.max(0, remainingBudget));
+    // Semua card fresh yang sudah masuk kuota akan diproses.
+    const cardsToProcess = freshCards;
 
     logger.info(
       {
@@ -441,6 +448,9 @@ async function scrapeHashtag(
           detailFetchCount < TIKTOK.maxDetailFetchesPerHashtag
         ) {
           detailFetchCount += 1;
+
+          await delay(TIKTOK.detailFetchDelayMs);
+
           const detailCaption = await fetchCaptionFromDetailPage(
             page,
             enrichedCard.href,
@@ -448,6 +458,8 @@ async function scrapeHashtag(
 
           if (detailCaption) {
             enrichedCard.caption = detailCaption;
+          } else {
+            enrichedCard.captionFetchAttempted = true;
           }
         }
 

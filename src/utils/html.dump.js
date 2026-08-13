@@ -2,15 +2,17 @@
 const fs = require("fs").promises;
 const path = require("path");
 const { CONFIG } = require("../config");
-const { ensureDirectory } = require("./storage.service");
+const { ensureDirectory } = require("../services/storage.service");
 const logger = require("./logger");
 
 function sanitizeDumpName(value) {
-  return String(value || "debug")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "debug";
+  return (
+    String(value || "debug")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "debug"
+  );
 }
 
 async function dumpHtml(name, html) {
@@ -19,11 +21,7 @@ async function dumpHtml(name, html) {
   }
 
   const safeName = sanitizeDumpName(name);
-  const filePath = path.join(
-    CONFIG.dataDir,
-    "debug",
-    `${safeName}.html`,
-  );
+  const filePath = path.join(CONFIG.dataDir, "debug", `${safeName}.html`);
 
   await ensureDirectory(filePath);
   await fs.writeFile(filePath, String(html || ""), "utf8");

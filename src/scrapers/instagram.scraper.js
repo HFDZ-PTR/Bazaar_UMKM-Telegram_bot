@@ -17,7 +17,8 @@ const INSTAGRAM = {
   hashtagBaseUrl: "https://www.instagram.com/explore/tags/",
   postBaseUrl: "https://www.instagram.com",
   minAltCaptionLength: 30,
-  maxDetailFetchesPerHashtag: 3,
+  maxDetailFetchesPerHashtag: 15,
+  detailFetchDelayMs: 1200,
 };
 
 function normalizeText(value = "") {
@@ -88,7 +89,16 @@ async function extractPostCaption(page) {
   return normalizeText(visibleCaption);
 }
 
-async function fetchCaptionFromDetailPage(page, href) {
+async function extractPostImageFromDetailPage(page) {
+  return page
+    .$eval(
+      'meta[property="og:image"]',
+      (element) => element.getAttribute("content") || "",
+    )
+    .catch(() => "");
+}
+
+async function fetchDetailFromPage(page, href) {
   const url = buildPostUrl(href);
 
   return retryOperation(
@@ -104,7 +114,13 @@ async function fetchCaptionFromDetailPage(page, href) {
       }
 
       await page.waitForSelector("article", { timeout: 8000 }).catch(() => {});
-      return extractPostCaption(page);
+
+      const [caption, imageUrl] = await Promise.all([
+        extractPostCaption(page),
+        extractPostImageFromDetailPage(page),
+      ]);
+
+      return { caption, imageUrl };
     },
     {
       retries: 1,
@@ -118,6 +134,37 @@ async function collectRawPosts(page) {
     const seen = new Set();
     const posts = [];
 
+    function pickBestImageUrl(img) {
+      if (!img) return "";
+
+      const src = img.getAttribute("src") || "";
+      const isPlaceholder =
+        !src || src.startsWith("data:image") || src.length < 20;
+
+      if (!isPlaceholder) {
+        return src;
+      }
+
+      const dataSrc = img.getAttribute("data-src") || "";
+      if (dataSrc && !dataSrc.startsWith("data:image")) {
+        return dataSrc;
+      }
+
+      const srcset =
+        img.getAttribute("srcset") || img.getAttribute("data-srcset") || "";
+      if (srcset) {
+        const candidates = srcset
+          .split(",")
+          .map((entry) => entry.trim().split(" ")[0])
+          .filter(Boolean);
+        if (candidates.length > 0) {
+          return candidates[candidates.length - 1];
+        }
+      }
+
+      return "";
+    }
+
     for (const link of document.querySelectorAll('a[href*="/p/"]')) {
       const href = link.getAttribute("href") || "";
       if (!href || seen.has(href)) {
@@ -129,7 +176,7 @@ async function collectRawPosts(page) {
       const img = link.querySelector("img");
       posts.push({
         href,
-        imgSrc: img?.getAttribute("src") || "",
+        imgSrc: pickBestImageUrl(img),
         altText: img?.getAttribute("alt") || "",
       });
     }
@@ -138,16 +185,26 @@ async function collectRawPosts(page) {
   });
 }
 
-async function dumpPageState(page, hashtag, state) {
+async function dumpHtmlState(page, hashtag, state) {
   try {
-    return await dumpHtml(`instagram-${hashtag}-${state}`, await page.content());
+    return await dumpHtml(
+      `instagram-${hashtag}-${state}`,
+      await page.content(),
+    );
   } catch (error) {
-    logger.warn({ hashtag, state, err: error }, "failed to dump instagram html");
+    logger.warn(
+      { hashtag, state, err: error },
+      "failed to dump instagram html",
+    );
     return null;
   }
 }
 
-async function scrapeHashtag(page, hashtag, remainingBudget = CONFIG.maxPostsPerScrape) {
+async function scrapeHashtag(
+  page,
+  hashtag,
+  remainingBudget = CONFIG.maxPostsPerScrape,
+) {
   const url = `${INSTAGRAM.hashtagBaseUrl}${encodeURIComponent(hashtag)}/`;
 
   logger.info({ platform: "instagram", hashtag, url }, "scraping hashtag");
@@ -157,35 +214,49 @@ async function scrapeHashtag(page, hashtag, remainingBudget = CONFIG.maxPostsPer
       page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
     );
 
-    await dumpPageState(page, hashtag, "after-goto");
+    await dumpHtmlState(page, hashtag, "after-goto");
 
     await ensureAuthenticated(page, "instagram");
 
     if (page.url().includes("instagram.com/accounts/login")) {
-      logger.warn({ hashtag, url }, "redirected to login, retrying hashtag page");
+      logger.warn(
+        { hashtag, url },
+        "redirected to login, retrying hashtag page",
+      );
 
       await retryOperation(() =>
         page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }),
       );
 
-      await dumpPageState(page, hashtag, "after-login-retry");
+      await dumpHtmlState(page, hashtag, "after-login-retry");
     }
 
     await delay(Math.floor(Math.random() * 800) + 300);
     await scrollPage(page, 3);
 
-    await page.waitForSelector('a[href*="/p/"]', { timeout: 15000 }).catch(() => {
-      logger.warn({ hashtag, url }, "no instagram posts found within timeout");
-    });
+    await page
+      .waitForSelector('a[href*="/p/"]', { timeout: 15000 })
+      .catch(() => {
+        logger.warn(
+          { hashtag, url },
+          "no instagram posts found within timeout",
+        );
+      });
 
-    await dumpPageState(page, hashtag, "after-scroll");
+    await dumpHtmlState(page, hashtag, "after-scroll");
 
-    const rawPosts = await collectRawPosts(page);
+    const rawPostsAll = await collectRawPosts(page);
+
+    // Batasi berdasarkan MAX_POSTS_PER_SCRAPE dari .env.
+    // remainingBudget adalah sisa kuota pada platform ini.
+    const rawPosts = rawPostsAll.slice(0, Math.max(0, remainingBudget));
+
     const freshPosts = rawPosts.filter((post) => {
       return !dedupService.has("instagram", extractPostId(post.href));
     });
 
-    const postsToProcess = freshPosts.slice(0, Math.max(0, remainingBudget));
+    // Semua post fresh yang sudah masuk kuota akan diproses.
+    const postsToProcess = freshPosts;
 
     logger.info(
       {
@@ -199,50 +270,74 @@ async function scrapeHashtag(page, hashtag, remainingBudget = CONFIG.maxPostsPer
     );
 
     if (postsToProcess.length === 0) {
-      await dumpPageState(page, hashtag, "no-fresh-posts");
+      await dumpHtmlState(page, hashtag, "no-fresh-posts");
       return [];
     }
 
     const parsedPosts = [];
     let detailFetchCount = 0;
+    let droppedNoCaptionCount = 0;
 
     for (const post of postsToProcess) {
       const altCaption = normalizeText(post.altText);
 
       if (altCaption.length >= INSTAGRAM.minAltCaptionLength) {
-        const parsed = parseInstagramPost(post.href, altCaption, post.imgSrc);
-        if (parsed) {
-          parsedPosts.push(parsed);
-        }
-        continue;
-      }
-
-      if (detailFetchCount >= INSTAGRAM.maxDetailFetchesPerHashtag) {
-        logger.info(
-          { hashtag, href: post.href },
-          "instagram detail fetch limit reached",
+        const parsed = parseInstagramPost(
+          post.href,
+          altCaption,
+          post.imgSrc,
+          hashtag,
         );
-        continue;
-      }
-
-      detailFetchCount += 1;
-
-      try {
-        const caption = await fetchCaptionFromDetailPage(page, post.href);
-        const parsed = parseInstagramPost(post.href, caption, post.imgSrc);
-
         if (parsed) {
           parsedPosts.push(parsed);
         }
-      } catch (error) {
-        logger.warn(
-          {
+        continue;
+      }
+
+      if (detailFetchCount < INSTAGRAM.maxDetailFetchesPerHashtag) {
+        detailFetchCount += 1;
+
+        await delay(INSTAGRAM.detailFetchDelayMs);
+
+        try {
+          const detail = await fetchDetailFromPage(page, post.href);
+          const finalCaption = detail.caption || altCaption;
+          const finalImageUrl = post.imgSrc || detail.imageUrl || "";
+          const parsed = parseInstagramPost(
+            post.href,
+            finalCaption,
+            finalImageUrl,
             hashtag,
-            href: post.href,
-            err: error,
-          },
-          "failed to load instagram post detail",
-        );
+          );
+
+          if (parsed) {
+            parsedPosts.push(parsed);
+          }
+
+          continue;
+        } catch (error) {
+          logger.warn(
+            {
+              hashtag,
+              href: post.href,
+              err: error,
+            },
+            "failed to load instagram post detail, falling back to alt text",
+          );
+        }
+      }
+
+      const parsed = parseInstagramPost(
+        post.href,
+        altCaption,
+        post.imgSrc,
+        hashtag,
+      );
+
+      if (parsed) {
+        parsedPosts.push(parsed);
+      } else {
+        droppedNoCaptionCount += 1;
       }
     }
 
@@ -254,13 +349,14 @@ async function scrapeHashtag(page, hashtag, remainingBudget = CONFIG.maxPostsPer
         withLocation: parsedPosts.filter((item) => item.location).length,
         withEventDate: parsedPosts.filter((item) => item.eventDate).length,
         detailFetches: detailFetchCount,
+        droppedNoCaptionCount,
       },
       "instagram hashtag parsed",
     );
 
     return parsedPosts;
   } catch (error) {
-    await dumpPageState(page, hashtag, "error");
+    await dumpHtmlState(page, hashtag, "error");
     throw error;
   }
 }

@@ -115,6 +115,22 @@ function formatTanggal(value = "") {
   return `${hari}-${bulan}-${tahun}`;
 }
 
+/**
+ * PENTING: baris "Tanggal" WAJIB hanya memakai event.eventDate (tanggal asli
+ * dari caption), bukan event.date. Kolom "date" di database adalah fallback
+ * INTERNAL untuk kebutuhan cleanup/retention (lihat cleanup.service.js) dan
+ * TIDAK merepresentasikan tanggal acara sungguhan — kalau ditampilkan ke user
+ * seolah-olah itu tanggal acara, hasilnya menyesatkan (contoh: video TikTok
+ * tanpa caption jadi terlihat punya tanggal padahal itu cuma tanggal scrape).
+ */
+function formatTanggalLine(event) {
+  if (event.eventDate) {
+    return `Tanggal: ${escapeMarkdown(formatTanggal(event.eventDate))}`;
+  }
+
+  return "Tanggal: Tidak disebutkan di caption";
+}
+
 function buildTikTokMessage(event, options = {}) {
   const description = options.truncateDescription
     ? truncateText(event.description, options.maxDescriptionLength || 220)
@@ -127,15 +143,7 @@ function buildTikTokMessage(event, options = {}) {
     `Postingan TikTok oleh ${escapeMarkdown(event.organizer || "tidak diketahui")}`,
   );
   addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
-
-  if (event.eventDate || event.date) {
-    addLine(
-      lines,
-      `Tanggal: ${escapeMarkdown(
-        formatTanggal(event.eventDate || event.date),
-      )}`,
-    );
-  }
+  addLine(lines, formatTanggalLine(event));
 
   if (event.location) {
     addLine(lines, `Lokasi: ${escapeMarkdown(event.location)}`);
@@ -164,15 +172,7 @@ function buildDefaultMessage(event, options = {}) {
 
   addLine(lines, `*${escapeMarkdown(event.title || "")}*`);
   addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
-
-  if (event.eventDate || event.date) {
-    addLine(
-      lines,
-      `Tanggal: ${escapeMarkdown(
-        formatTanggal(event.eventDate || event.date),
-      )}`,
-    );
-  }
+  addLine(lines, formatTanggalLine(event));
 
   if (event.location) {
     addLine(lines, `Lokasi: ${escapeMarkdown(event.location)}`);

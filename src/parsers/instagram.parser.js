@@ -1,5 +1,6 @@
-// src/parsers/instagram.parser.js — versi perbaikan (fokus: extractLocation & alur judul)
+// src/parsers/instagram.parser.js — versi perbaikan (fokus: extractLocation, fallback caption kosong)
 const { extractEventDateFromText } = require("../utils/date");
+const { extractRegion } = require("../utils/region");
 
 // Prioritas 1: label eksplisit lokasi. TIDAK di-anchor ke awal baris (^) lagi,
 // karena banyak caption menaruh emoji lokasi di tengah kalimat tanpa baris baru.
@@ -123,7 +124,9 @@ function buildTitle(text = "") {
   for (const line of lines) {
     if (
       /^#/.test(line) ||
-      /^(?:📍|lokasi|tempat|venue|location|📅|date|tanggal|jam|waktu)\b/i.test(line)
+      /^(?:📍|lokasi|tempat|venue|location|📅|date|tanggal|jam|waktu)\b/i.test(
+        line,
+      )
     ) {
       continue;
     }
@@ -134,28 +137,60 @@ function buildTitle(text = "") {
   return normalizeInlineText(text).slice(0, 120);
 }
 
-function parseInstagramPost(href, caption, imgSrc = "") {
+function buildFallbackDescription(hashtag) {
+  const tag = hashtag ? `#${hashtag}` : "bazar UMKM";
+  return `Caption tidak tersedia untuk postingan Instagram ini (ditemukan lewat ${tag}). Lihat postingan asli untuk detail lengkap.`;
+}
+
+/**
+ * @param {string} href - path/URL post Instagram
+ * @param {string} caption - caption/alt text, boleh kosong
+ * @param {string} imgSrc - URL gambar thumbnail
+ * @param {string} hashtag - hashtag yang jadi sumber penemuan post ini,
+ *                            dipakai untuk fallback description saat caption kosong.
+ */
+function parseInstagramPost(href, caption, imgSrc = "", hashtag = "") {
   const normalizedCaption = normalizeMultilineText(caption);
-  if (!normalizedCaption) {
+
+  const postId =
+    String(href || "")
+      .split("/")
+      .filter(Boolean)
+      .pop() || String(href || "");
+
+  if (!postId) {
+    // Tidak ada href/postId yang valid sama sekali -> memang tidak bisa diproses.
     return null;
   }
 
-  const postId =
-    String(href || "").split("/").filter(Boolean).pop() || String(href || "");
   const sourceUrl = String(href || "").startsWith("/")
     ? `https://www.instagram.com${href}`
     : String(href || "");
+
   const eventDate = extractEventDate(normalizedCaption);
+
+  // Dulu: kalau normalizedCaption kosong, function langsung `return null`
+  // sehingga post HILANG TOTAL dari hasil scrape (tidak tersimpan sama sekali).
+  // Sekarang: tetap disimpan dengan description fallback, supaya minimal
+  // link sumber & thumbnail-nya masih bisa dilihat user di dashboard.
+  const description = normalizedCaption || buildFallbackDescription(hashtag);
+  const title = normalizedCaption
+    ? buildTitle(normalizedCaption)
+    : "Instagram post";
+
+  const location = extractLocation(normalizedCaption);
+  const region = extractRegion(location, normalizedCaption);
 
   return {
     platform: "instagram",
     postId,
-    title: buildTitle(normalizedCaption),
-    date: eventDate || new Date().toISOString().slice(0, 10),
+    title,
+    date: eventDate || null,
     eventDate,
-    location: extractLocation(normalizedCaption),
+    location,
+    region,
     organizer: extractOrganizer(normalizedCaption),
-    description: normalizedCaption,
+    description,
     imageUrl: imgSrc || "",
     sourceUrl,
   };

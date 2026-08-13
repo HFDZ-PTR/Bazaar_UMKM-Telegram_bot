@@ -1,6 +1,7 @@
 // src/parsers/tiktok.parser.js
 const { eventSchema } = require("../config");
 const { extractLocation, extractEventDate } = require("./instagram.parser");
+const { extractRegion } = require("../utils/region");
 
 function toWellFormedText(value = "") {
   const text = String(value ?? "");
@@ -125,6 +126,14 @@ function cleanTikTokDescription(text = "") {
   return cleaned.join("\n").trim();
 }
 
+function buildFallbackDescription(authorUsername, hashtag) {
+  const author = authorUsername
+    ? `@${authorUsername.replace(/^@/, "")}`
+    : "akun ini";
+  const tag = hashtag ? `#${hashtag}` : "bazar UMKM";
+  return `Video TikTok dari ${author} terkait ${tag}. Caption tidak tersedia — lihat video langsung untuk detail lokasi dan tanggal acara.`;
+}
+
 function parseTikTokVideo(card) {
   const href = String(card?.href || "").trim();
   const videoId = String(card?.videoId || extractVideoId(href)).trim();
@@ -140,17 +149,30 @@ function parseTikTokVideo(card) {
   const eventDate = extractEventDate(caption);
   const now = new Date().toISOString();
 
+  let description = cleanTikTokDescription(caption);
+
+  // Kalau caption memang kosong (baik dari grid maupun setelah detail fetch),
+  // isi fallback yang jelas ketimbang membiarkan description kosong total.
+  if (!description) {
+    description = buildFallbackDescription(authorUsername, card?.sourceHashtag);
+  }
+  const location = extractLocation(caption);
+  const region = extractRegion(location, caption, card?.sourceHashtag); // <-- BARU
+
   const event = {
     platform: "tiktok",
     postId: videoId,
     title: authorUsername
       ? `TikTok post by @${authorUsername.replace(/^@/, "")}`
       : "TikTok post",
+
     date: eventDate || null,
     eventDate: eventDate || null,
-    location: extractLocation(caption),
+
+    location,
+    region,
     organizer: extractOrganizer(caption, authorUsername),
-    description: cleanTikTokDescription(caption),
+    description,
     imageUrl: String(card?.thumbnailUrl || "").trim(),
     sourceUrl: buildSourceUrl(href),
     scrapedAt: now,
@@ -165,4 +187,5 @@ module.exports = {
   parseTikTokVideo,
   extractVideoId,
   extractOrganizer,
+  buildFallbackDescription,
 };

@@ -2,6 +2,8 @@
 const db = require("./database.service");
 const { createFingerprint } = require("../utils/fingerprint");
 const { isExpiredEventDate } = require("../utils/date");
+const { listKnownRegions } = require("../utils/region"); // <-- BARU
+const logger = require("../utils/logger");
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -15,6 +17,7 @@ const SORT_FIELD_MAP = {
   location: "location",
   organizer: "organizer",
   platform: "platform",
+  region: "region", // <-- BARU
 };
 
 function parsePage(value) {
@@ -44,6 +47,7 @@ function mapRowToEvent(row) {
     date: row.date,
     eventDate: row.event_date,
     location: row.location,
+    region: row.region || "Lainnya", // <-- BARU
     organizer: row.organizer,
     description: row.description,
     imageUrl: row.image_url,
@@ -61,11 +65,17 @@ function buildWhereClause(options = {}) {
   const platform = String(options.platform || "")
     .trim()
     .toLowerCase();
+  const region = String(options.region || "").trim(); // <-- BARU
   const keyword = String(options.q || "").trim();
 
   if (platform) {
     conditions.push("platform = @platform");
     params.platform = platform;
+  }
+
+  if (region) {
+    conditions.push("region = @region"); // <-- BARU
+    params.region = region;
   }
 
   if (keyword) {
@@ -111,10 +121,15 @@ function filterExpiredEvents(events, includeExpired) {
   });
 }
 
-function fetchRows(whereSql, orderSql, params = {}) {
-  return db
-    .prepare(
-      `
+function fetchRows(
+  whereSql,
+  orderSql,
+  params = {},
+  limit = null,
+  offset = null,
+) {
+  try {
+    let sql = `
     SELECT
       id,
       platform,
@@ -123,6 +138,7 @@ function fetchRows(whereSql, orderSql, params = {}) {
       date,
       event_date,
       location,
+      region,
       organizer,
       description,
       image_url,
@@ -133,9 +149,35 @@ function fetchRows(whereSql, orderSql, params = {}) {
     FROM events
     ${whereSql}
     ${orderSql}
-  `,
-    )
-    .all(params);
+  `;
+
+    const fullParams = { ...params };
+
+    if (Number.isInteger(limit) && limit > 0) {
+      sql += `\n    LIMIT @limit OFFSET @offset`;
+      fullParams.limit = limit;
+      fullParams.offset = Number.isInteger(offset) && offset >= 0 ? offset : 0;
+    }
+
+    return db.prepare(sql).all(fullParams);
+  } catch (err) {
+    logger.error(
+      { err, whereSql, orderSql, params },
+      "Failed to fetch rows from events",
+    );
+    throw err;
+  }
+}
+
+function countRows(whereSql, params = {}) {
+  try {
+    const sql = `SELECT COUNT(*) as total FROM events ${whereSql}`;
+    const row = db.prepare(sql).get(params);
+    return Number(row && row.total ? row.total : 0);
+  } catch (err) {
+    logger.error({ err, whereSql, params }, "Failed to count rows in events");
+    throw err;
+  }
 }
 
 async function loadAllEvents() {
@@ -153,27 +195,29 @@ async function queryEvents(options = {}) {
     options.order,
   );
 
-  const allEvents = filterExpiredEvents(
-    fetchRows(whereSql, orderSql, params).map(mapRowToEvent),
-    Boolean(options.includeExpired),
-  );
+  try {
+    const total = countRows(whereSql, params);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const currentPage = Math.min(page, totalPages);
+    const rows = fetchRows(whereSql, orderSql, params, limit, offset);
+    const mapped = rows.map(mapRowToEvent);
+    const data = filterExpiredEvents(mapped, Boolean(options.includeExpired));
 
-  const total = allEvents.length;
-  const totalPages = Math.max(1, Math.ceil(total / limit));
-  const currentPage = Math.min(page, totalPages);
-  const data = allEvents.slice(offset, offset + limit);
-
-  return {
-    data,
-    meta: {
-      page: currentPage,
-      limit,
-      total,
-      totalPages,
-      sortBy,
-      order,
-    },
-  };
+    return {
+      data,
+      meta: {
+        page: currentPage,
+        limit,
+        total,
+        totalPages,
+        sortBy,
+        order,
+      },
+    };
+  } catch (err) {
+    logger.error({ err, options }, "Failed to query events");
+    throw err;
+  }
 }
 
 async function getEventById(id) {
@@ -188,6 +232,7 @@ async function getEventById(id) {
       date,
       event_date,
       location,
+      region,
       organizer,
       description,
       image_url,
@@ -209,6 +254,11 @@ async function getEventsByPlatform(platform, options = {}) {
   return queryEvents({ ...options, platform });
 }
 
+async function getEventsByRegion(region, options = {}) {
+  // <-- BARU
+  return queryEvents({ ...options, region });
+}
+
 async function getUpcomingEvents(options = {}) {
   return queryEvents({
     ...options,
@@ -226,11 +276,42 @@ async function searchEvents(query, options = {}) {
   });
 }
 
+/**
+ * Daftar wilayah beserta jumlah event aktif (belum expired) di tiap wilayah.
+ * Dipakai untuk populate dropdown/filter wilayah di dashboard.
+ */
+async function getRegionSummary() {
+  const rows = db
+    .prepare(
+      `
+    SELECT region, COUNT(*) as total
+    FROM events
+    GROUP BY region
+    ORDER BY total DESC
+  `,
+    )
+    .all();
+
+  const knownRegions = listKnownRegions();
+  const summaryMap = new Map(
+    rows.map((row) => [row.region || "Lainnya", row.total]),
+  );
+
+  // Pastikan semua region yang dikenal tetap muncul walau count-nya 0,
+  // supaya filter UI tidak "hilang" pilihan.
+  return knownRegions.map((region) => ({
+    region,
+    total: summaryMap.get(region) || 0,
+  }));
+}
+
 module.exports = {
   loadAllEvents,
   queryEvents,
   getEventById,
   getEventsByPlatform,
+  getEventsByRegion, // <-- BARU
   getUpcomingEvents,
   searchEvents,
+  getRegionSummary, // <-- BARU
 };

@@ -1,7 +1,7 @@
 // src/scrapers/index.js
 const logger = require("../utils/logger");
 const { eventSchema } = require("../config");
-const { appendError, appendEvent } = require("../utils/storage.service");
+const { appendError, appendEvent } = require("../services/storage.service");
 const dedupService = require("../services/dedup.service");
 const telegramService = require("../services/telegram.service");
 const { scrapeInstagram } = require("./instagram.scraper");
@@ -19,6 +19,7 @@ async function processEvent(event) {
       },
       "skipped invalid event",
     );
+
     return false;
   }
 
@@ -34,10 +35,28 @@ async function processEvent(event) {
       },
       "skipped duplicate event",
     );
+
     return false;
   }
 
-  const filePath = await appendEvent(item);
+  const result = await appendEvent(item);
+
+  // appendEvent juga mengecek duplicate content.
+  // Jangan mengirim Telegram jika event tidak benar-benar diinsert.
+  if (!result?.inserted) {
+    logger.debug(
+      {
+        platform: item.platform,
+        postId: item.postId,
+        sourceHashtag: item.sourceHashtag || "",
+        skippedReason: result?.skippedReason || "duplicate",
+        existingId: result?.id || "",
+      },
+      "skipped event during storage",
+    );
+
+    return false;
+  }
 
   logger.info(
     {
@@ -46,7 +65,7 @@ async function processEvent(event) {
       sourceHashtag: item.sourceHashtag || "",
       eventDate: item.eventDate || item.date || "",
       location: item.location || "",
-      filePath,
+      eventId: result.id,
     },
     "event saved",
   );

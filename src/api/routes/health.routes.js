@@ -12,7 +12,8 @@ router.get("/health", async (req, res, next) => {
     sendSuccess(
       res,
       {
-        status: botStatus.isRunning || botStatus.lastScrapeAt ? "ok" : "starting",
+        status:
+          botStatus.isRunning || botStatus.lastScrapeAt ? "ok" : "starting",
         uptime: process.uptime(),
         lastScrapeAt: botStatus.lastScrapeAt,
       },

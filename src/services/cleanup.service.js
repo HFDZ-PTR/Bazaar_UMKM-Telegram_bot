@@ -1,35 +1,27 @@
-// src/services/cleanup.service.js
+// src/services/cleanup.service.js (alternatif: pure SQL, tanpa loop JS)
 const db = require("./database.service");
 const logger = require("../utils/logger");
-const { isExpiredEventDate } = require("../utils/date");
 
+const RETENTION_DAYS = 7;
+
+/**
+ * Hapus event yang sudah expired dalam satu query.
+ * COALESCE(event_date, date, created_at) memastikan SEMUA baris punya
+ * reference date yang valid, termasuk baris dengan event_date = NULL.
+ */
 async function cleanupExpiredEvents() {
-  const rows = db.prepare(`
-    SELECT id, event_date
-    FROM events
-  `).all();
-
-  let eventsRemoved = 0;
-
-  const deleteStmt = db.prepare(`
+  const stmt = db.prepare(`
     DELETE FROM events
-    WHERE id = ?
+    WHERE date(COALESCE(event_date, date, created_at))
+      < date('now', '-${RETENTION_DAYS} days')
   `);
 
-  for (const row of rows) {
-    const eventDate =
-      typeof row.event_date === "string" ? row.event_date : null;
-
-    if (isExpiredEventDate(eventDate, 7)) {
-      deleteStmt.run(row.id);
-      eventsRemoved += 1;
-    }
-  }
+  const info = stmt.run();
 
   const result = {
     filesScanned: 0,
     filesDeleted: 0,
-    eventsRemoved,
+    eventsRemoved: info.changes,
   };
 
   logger.info(result, "event cleanup completed");

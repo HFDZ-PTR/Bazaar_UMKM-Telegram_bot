@@ -102,6 +102,12 @@ Typical `events` fields:
 - `scraped_at`
 - `created_at`
 
+Notes about schema and migrations:
+
+- **New fields:** the `events` table now includes a `region` column and a `content_fingerprint` column used for cross-account deduplication.
+- **Automatic migration:** the application will attempt to add missing columns and indexes on startup if they are not present in an existing `app.db`. Startup errors during DB initialization are logged and re-thrown to make failures visible.
+- **Indexes:** indexes are created on `platform`, `event_date`, `created_at`, `region`, and `content_fingerprint` for query performance.
+
 ## Execution modes
 
 ### API only
@@ -175,6 +181,30 @@ SCRAPE_INTERVAL=1h
 LOG_LEVEL=info
 DEBUG_HTML_DUMP=0
 ```
+
+Configuration & paths
+
+- Runtime paths are derived from the project root and exposed via `CONFIG`:
+  - `dataDir` → `data/` (main app DB `data/app.db`, `data/debug/`, `data/logs/`)
+  - `cookiesDir` → `cookies/` (browser cookies like `cookies/instagram.json`)
+  - `logsDir` → `data/logs/`
+- The app validates environment variables with `zod` and supports multiline hashtag lists in `INSTAGRAM_HASHTAGS` and `TIKTOK_HASHTAGS` (comma or newline separated).
+
+Default scraper behavior
+
+- Human-like delays and scrolling behavior are configurable; defaults are:
+  - `humanDelayMinMs`: 1000
+  - `humanDelayMaxMs`: 3000
+  - `scrollSteps`: 8
+  - `scrollDelayMs`: 1500
+  - `networkTimeoutMs`: 45000
+
+Scripts
+
+- `npm start`: start API server (`src/app.js`).
+- `npm run bot`: start bot worker (`src/bot.js`).
+- `npm run run:once`: run one scrape cycle (`src/run-once.js`).
+- `npm run migrate:sqlite`: migrate legacy JSON to SQLite (`scripts/migrate-json-to-sqlite.js`).
 
 Variable notes:
 

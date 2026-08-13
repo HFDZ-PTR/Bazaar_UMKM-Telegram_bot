@@ -80,6 +80,33 @@ router.get("/events/platform/:platform", async (req, res, next) => {
   }
 });
 
+const {
+  getRegionSummary,
+  getEventsByRegion,
+} = require("../../services/event-query.service"); // tambah getRegionSummary, getEventsByRegion ke import yang sudah ada
+
+router.get("/events/regions", async (req, res, next) => {
+  try {
+    const summary = await getRegionSummary();
+    sendSuccess(res, summary);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/events/region/:region", async (req, res, next) => {
+  try {
+    const result = await getEventsByRegion(req.params.region, {
+      ...parsePagination(req.query),
+      includeExpired: false,
+    });
+
+    sendSuccess(res, result.data, result.meta);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/events/:id", async (req, res, next) => {
   try {
     const event = await getEventById(req.params.id);

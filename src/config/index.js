@@ -1,4 +1,4 @@
-// src/config/index.js
+// src/config/index.js (dengan support multiline .env)
 const path = require("path");
 const dotenv = require("dotenv");
 const { z } = require("zod");
@@ -9,7 +9,12 @@ const {
   TELEGRAM_DEFAULTS,
 } = require("./constants");
 
-dotenv.config();
+// Enable multiline support dengan opsi terbaru dari dotenv
+dotenv.config({
+  // Opsi ini membuat dotenv bisa parse string dengan newline dan backslash
+  // Namun perlu dotenv versi 16+ yang support multiline
+  multiline: true,
+});
 
 function parseDurationToMinutes(value) {
   const raw = String(value || "")
@@ -46,8 +51,8 @@ function parseDurationToMinutes(value) {
 
 function parseTagList(value) {
   const tags = String(value || "")
-    .split(",")
-    .map((tag) => tag.trim().toLowerCase().replace(/^#/, ""))
+    .split(/[,\n]/) // Split by comma OR newline
+    .map((tag) => tag.trim().toLowerCase().replace(/^#/, "").replace(/^\\/, ""))
     .filter(Boolean);
 
   return [...new Set(tags)];
@@ -160,6 +165,7 @@ const eventSchema = z.object({
   date: z.string().nullable().optional(),
   eventDate: z.string().nullable().optional(),
   location: z.string().optional().default(""),
+  region: z.string().optional().default("Lainnya"),
   organizer: z.string().optional().default(""),
   description: z.string().optional().default(""),
   imageUrl: z.string().optional().default(""),

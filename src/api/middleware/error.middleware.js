@@ -24,7 +24,9 @@ function errorMiddleware(error, req, res, next) {
 
   const statusCode = getStatusCode(error);
   const message =
-    statusCode >= 500 ? "Internal server error" : error.message || "Request failed";
+    statusCode >= 500
+      ? "Internal server error"
+      : error.message || "Request failed";
 
   sendError(res, statusCode, message);
 }

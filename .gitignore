@@ -3,3 +3,5 @@ data/
 cookies/
 chrome-profiles/
 .env
+scripts/
+PROJECT_OVERVIEW.md
