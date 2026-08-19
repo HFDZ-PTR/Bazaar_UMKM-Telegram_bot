@@ -1,6 +1,10 @@
-// src/parsers/tiktok.parser.js
+// src/parsers/tiktok.parser.js — versi wajib caption + fallback posted date
 const { eventSchema } = require("../config");
-const { extractLocation, extractEventDate } = require("./instagram.parser");
+const {
+  extractLocation,
+  extractEventDate,
+  MIN_CAPTION_LENGTH,
+} = require("./instagram.parser");
 const { extractRegion } = require("../utils/region");
 
 function toWellFormedText(value = "") {
@@ -126,14 +130,13 @@ function cleanTikTokDescription(text = "") {
   return cleaned.join("\n").trim();
 }
 
-function buildFallbackDescription(authorUsername, hashtag) {
-  const author = authorUsername
-    ? `@${authorUsername.replace(/^@/, "")}`
-    : "akun ini";
-  const tag = hashtag ? `#${hashtag}` : "bazar UMKM";
-  return `Video TikTok dari ${author} terkait ${tag}. Caption tidak tersedia — lihat video langsung untuk detail lokasi dan tanggal acara.`;
-}
-
+/**
+ * @param {object} card - hasil scrape TikTok, WAJIB punya caption.
+ *                         Card tanpa caption menghasilkan null (ditolak).
+ *                         card.postedAt (opsional, ISO YYYY-MM-DD) dipakai
+ *                         sebagai FALLBACK saat caption tidak punya tanggal
+ *                         event eksplisit.
+ */
 function parseTikTokVideo(card) {
   const href = String(card?.href || "").trim();
   const videoId = String(card?.videoId || extractVideoId(href)).trim();
@@ -145,19 +148,34 @@ function parseTikTokVideo(card) {
   const caption = normalizeMultilineText(
     card?.caption || card?.description || "",
   );
+
   const authorUsername = normalizeInlineText(card?.authorUsername || "");
-  const eventDate = extractEventDate(caption);
-  const now = new Date().toISOString();
 
-  let description = cleanTikTokDescription(caption);
+  const description = cleanTikTokDescription(caption);
 
-  // Kalau caption memang kosong (baik dari grid maupun setelah detail fetch),
-  // isi fallback yang jelas ketimbang membiarkan description kosong total.
-  if (!description) {
-    description = buildFallbackDescription(authorUsername, card?.sourceHashtag);
+  // Caption/description wajib ada dan cukup panjang.
+  // Kalau tidak, video ini TIDAK disimpan dan TIDAK dikirim ke Telegram.
+  if (!description || description.length < MIN_CAPTION_LENGTH) {
+    return null;
   }
+
+  const captionEventDate = extractEventDate(caption);
+  const now = new Date().toISOString();
   const location = extractLocation(caption);
-  const region = extractRegion(location, caption, card?.sourceHashtag); // <-- BARU
+  const region = extractRegion(location, caption, card?.sourceHashtag);
+
+  const postedAt = card?.postedAt || null;
+
+  // Fallback: kalau caption tidak punya tanggal eksplisit,
+  // pakai tanggal upload asli sebagai referensi tanggal (BUKAN tanggal
+  // acara). Kolom eventDate tetap null supaya tidak masuk web calendar
+  // secara keliru.
+  const finalDate = captionEventDate || postedAt || null;
+  const dateSource = captionEventDate
+    ? "caption"
+    : postedAt
+      ? "posted_at"
+      : null;
 
   const event = {
     platform: "tiktok",
@@ -166,8 +184,10 @@ function parseTikTokVideo(card) {
       ? `TikTok post by @${authorUsername.replace(/^@/, "")}`
       : "TikTok post",
 
-    date: eventDate || null,
-    eventDate: eventDate || null,
+    date: finalDate,
+    eventDate: captionEventDate || null,
+    postedAt,
+    dateSource,
 
     location,
     region,
@@ -187,5 +207,4 @@ module.exports = {
   parseTikTokVideo,
   extractVideoId,
   extractOrganizer,
-  buildFallbackDescription,
 };

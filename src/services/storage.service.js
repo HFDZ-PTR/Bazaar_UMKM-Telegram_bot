@@ -24,6 +24,14 @@ function normalizeEventRecord(event) {
   const parsedEventDate = parseEventDateString(event.eventDate);
   const eventDate = parsedEventDate ? toIsoDateString(parsedEventDate) : null;
 
+  // postedAt (tanggal upload asli) juga dinormalisasi lewat parser yang
+  // sama, supaya formatnya konsisten YYYY-MM-DD kalau ternyata sudah
+  // berupa string tanggal valid.
+  const parsedPostedAt = parseEventDateString(event.postedAt);
+  const postedAt = parsedPostedAt
+    ? toIsoDateString(parsedPostedAt)
+    : event.postedAt || null;
+
   const region =
     event.region && event.region.trim()
       ? event.region.trim()
@@ -35,14 +43,22 @@ function normalizeEventRecord(event) {
     location: event.location,
   });
 
+  // dateSource: penanda asal nilai kolom "date".
+  // Kalau tidak dikirim oleh parser, tentukan otomatis berdasarkan
+  // ketersediaan eventDate vs postedAt.
+  const dateSource =
+    event.dateSource || (eventDate ? "caption" : postedAt ? "posted_at" : null);
+
   return {
     ...event,
     platform,
     id: event.id || createFingerprint(platform, event.postId),
     eventDate,
+    postedAt,
+    dateSource,
     region,
     contentFingerprint,
-    date: event.date || eventDate || null,
+    date: event.date || eventDate || postedAt || null,
     scrapedAt: event.scrapedAt || now,
     createdAt: event.createdAt || now,
   };
@@ -56,6 +72,8 @@ const insertEventStmt = db.prepare(`
     title,
     date,
     event_date,
+    posted_at,
+    date_source,
     location,
     region,
     content_fingerprint,
@@ -73,6 +91,8 @@ const insertEventStmt = db.prepare(`
     @title,
     @date,
     @event_date,
+    @posted_at,
+    @date_source,
     @location,
     @region,
     @content_fingerprint,
@@ -137,6 +157,8 @@ async function appendEvent(event) {
     title: record.title,
     date: record.date || null,
     event_date: record.eventDate || null,
+    posted_at: record.postedAt || null,
+    date_source: record.dateSource || null,
     location: record.location || "",
     region: record.region || UNKNOWN_REGION,
     content_fingerprint: record.contentFingerprint,

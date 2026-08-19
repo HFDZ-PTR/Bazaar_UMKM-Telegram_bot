@@ -1,22 +1,30 @@
-// src/services/cleanup.service.js (alternatif: pure SQL, tanpa loop JS)
+// src/services/cleanup.service.js
 const db = require("./database.service");
 const logger = require("../utils/logger");
 
-const RETENTION_DAYS = 7;
+const EVENT_RETENTION_DAYS = 7;
+const UNKNOWN_EVENT_RETENTION_DAYS = 7;
 
-/**
- * Hapus event yang sudah expired dalam satu query.
- * COALESCE(event_date, date, created_at) memastikan SEMUA baris punya
- * reference date yang valid, termasuk baris dengan event_date = NULL.
- */
 async function cleanupExpiredEvents() {
   const stmt = db.prepare(`
     DELETE FROM events
-    WHERE date(COALESCE(event_date, date, created_at))
-      < date('now', '-${RETENTION_DAYS} days')
+    WHERE
+      (
+        event_date IS NOT NULL
+        AND date(event_date) < date('now', ?)
+      )
+      OR
+      (
+        event_date IS NULL
+        AND date(COALESCE(posted_at, created_at))
+          < date('now', ?)
+      )
   `);
 
-  const info = stmt.run();
+  const info = stmt.run(
+    `-${EVENT_RETENTION_DAYS} days`,
+    `-${UNKNOWN_EVENT_RETENTION_DAYS} days`,
+  );
 
   const result = {
     filesScanned: 0,

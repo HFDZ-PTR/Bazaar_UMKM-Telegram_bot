@@ -44,17 +44,21 @@ function mapRowToEvent(row) {
     platform: row.platform,
     postId: row.post_id,
     title: row.title,
-    date: row.date,
-    eventDate: row.event_date,
-    location: row.location,
-    region: row.region || "Lainnya", // <-- BARU
-    organizer: row.organizer,
-    description: row.description,
-    imageUrl: row.image_url,
+
+    date: row.date || null,
+    eventDate: row.event_date || null,
+    postedAt: row.posted_at || null,
+    dateSource: row.date_source || null,
+
+    location: row.location || "",
+    region: row.region || "Lainnya",
+    organizer: row.organizer || "",
+    description: row.description || "",
+    imageUrl: row.image_url || "",
     sourceUrl: row.source_url,
-    sourceHashtag: row.source_hashtag,
-    scrapedAt: row.scraped_at,
-    createdAt: row.created_at,
+    sourceHashtag: row.source_hashtag || "",
+    scrapedAt: row.scraped_at || null,
+    createdAt: row.created_at || null,
   };
 }
 
@@ -113,11 +117,24 @@ function filterExpiredEvents(events, includeExpired) {
   }
 
   return events.filter((event) => {
-    if (!event.eventDate) {
-      return true;
+    // Jika memiliki tanggal acara, gunakan tanggal acara.
+    if (event.eventDate) {
+      return !isExpiredEventDate(event.eventDate, 7);
     }
 
-    return !isExpiredEventDate(event.eventDate, 7);
+    // Jika tidak memiliki tanggal acara, gunakan tanggal upload.
+    if (event.postedAt) {
+      return !isExpiredEventDate(event.postedAt, 7);
+    }
+
+    // Jika eventDate dan postedAt sama-sama tidak ada,
+    // gunakan createdAt sebagai fallback terakhir.
+    if (event.createdAt) {
+      return !isExpiredEventDate(event.createdAt, 7);
+    }
+
+    // Jika tidak ada referensi tanggal sama sekali, jangan tampilkan.
+    return false;
   });
 }
 
@@ -137,6 +154,8 @@ function fetchRows(
       title,
       date,
       event_date,
+      posted_at,
+      date_source,
       location,
       region,
       organizer,
@@ -231,6 +250,8 @@ async function getEventById(id) {
       title,
       date,
       event_date,
+      posted_at,
+      date_source,
       location,
       region,
       organizer,

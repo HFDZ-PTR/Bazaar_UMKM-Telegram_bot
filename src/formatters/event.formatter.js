@@ -115,6 +115,14 @@ function formatTanggal(value = "") {
   return `${hari}-${bulan}-${tahun}`;
 }
 
+function formatPostedAtLine(event) {
+  if (!event.postedAt) {
+    return "";
+  }
+
+  return `Diposting: ${escapeMarkdown(formatTanggal(event.postedAt))}`;
+}
+
 /**
  * PENTING: baris "Tanggal" WAJIB hanya memakai event.eventDate (tanggal asli
  * dari caption), bukan event.date. Kolom "date" di database adalah fallback
@@ -125,10 +133,10 @@ function formatTanggal(value = "") {
  */
 function formatTanggalLine(event) {
   if (event.eventDate) {
-    return `Tanggal: ${escapeMarkdown(formatTanggal(event.eventDate))}`;
+    return `Tanggal acara: ${escapeMarkdown(formatTanggal(event.eventDate))}`;
   }
 
-  return "Tanggal: Tidak disebutkan di caption";
+  return "Tanggal acara: Tidak disebutkan di caption";
 }
 
 function buildTikTokMessage(event, options = {}) {
@@ -144,6 +152,7 @@ function buildTikTokMessage(event, options = {}) {
   );
   addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
   addLine(lines, formatTanggalLine(event));
+  addLine(lines, formatPostedAtLine(event));
 
   if (event.location) {
     addLine(lines, `Lokasi: ${escapeMarkdown(event.location)}`);
@@ -173,6 +182,7 @@ function buildDefaultMessage(event, options = {}) {
   addLine(lines, `*${escapeMarkdown(event.title || "")}*`);
   addLine(lines, `Platform: ${escapeMarkdown(event.platform || "")}`);
   addLine(lines, formatTanggalLine(event));
+  addLine(lines, formatPostedAtLine(event));
 
   if (event.location) {
     addLine(lines, `Lokasi: ${escapeMarkdown(event.location)}`);

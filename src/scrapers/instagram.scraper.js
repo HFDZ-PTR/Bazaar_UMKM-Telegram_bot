@@ -1,4 +1,4 @@
-// src/scrapers/instagram.scraper.js
+// src/scrapers/instagram.scraper.js — versi wajib caption + fallback posted date
 const { CONFIG } = require("../config");
 const {
   createPage,
@@ -12,12 +12,15 @@ const { parseInstagramPost } = require("../parsers/instagram.parser");
 const { retryOperation } = require("../utils/retry");
 const dedupService = require("../services/dedup.service");
 const logger = require("../utils/logger");
+const { parseInstagramPostedAt, toIsoDate } = require("../utils/posted-date");
 
 const INSTAGRAM = {
   hashtagBaseUrl: "https://www.instagram.com/explore/tags/",
   postBaseUrl: "https://www.instagram.com",
-  minAltCaptionLength: 30,
-  maxDetailFetchesPerHashtag: 15,
+  // Alt text TIDAK dianggap caption asli. Nilai ini hanya dipakai untuk
+  // decision awal apakah post ini "kemungkinan" punya caption, tapi caption
+  // FINAL selalu diambil dari halaman detail post.
+  maxDetailFetchesPerHashtag: 20,
   detailFetchDelayMs: 1200,
 };
 
@@ -98,6 +101,12 @@ async function extractPostImageFromDetailPage(page) {
     .catch(() => "");
 }
 
+async function extractPostedAtFromDetailPage(page) {
+  return page
+    .$eval("time[datetime]", (el) => el.getAttribute("datetime") || "")
+    .catch(() => "");
+}
+
 async function fetchDetailFromPage(page, href) {
   const url = buildPostUrl(href);
 
@@ -115,12 +124,13 @@ async function fetchDetailFromPage(page, href) {
 
       await page.waitForSelector("article", { timeout: 8000 }).catch(() => {});
 
-      const [caption, imageUrl] = await Promise.all([
+      const [caption, imageUrl, postedAtRaw] = await Promise.all([
         extractPostCaption(page),
         extractPostImageFromDetailPage(page),
+        extractPostedAtFromDetailPage(page),
       ]);
 
-      return { caption, imageUrl };
+      return { caption, imageUrl, postedAtRaw };
     },
     {
       retries: 1,
@@ -248,14 +258,12 @@ async function scrapeHashtag(
     const rawPostsAll = await collectRawPosts(page);
 
     // Batasi berdasarkan MAX_POSTS_PER_SCRAPE dari .env.
-    // remainingBudget adalah sisa kuota pada platform ini.
     const rawPosts = rawPostsAll.slice(0, Math.max(0, remainingBudget));
 
     const freshPosts = rawPosts.filter((post) => {
       return !dedupService.has("instagram", extractPostId(post.href));
     });
 
-    // Semua post fresh yang sudah masuk kuota akan diproses.
     const postsToProcess = freshPosts;
 
     logger.info(
@@ -279,65 +287,82 @@ async function scrapeHashtag(
     let droppedNoCaptionCount = 0;
 
     for (const post of postsToProcess) {
-      const altCaption = normalizeText(post.altText);
+      // Caption FINAL selalu diambil dari halaman detail post.
+      // Alt text TIDAK dipakai sebagai caption karena hanya deskripsi gambar,
+      // bukan caption asli yang ditulis pengunggah.
+      if (detailFetchCount >= INSTAGRAM.maxDetailFetchesPerHashtag) {
+        droppedNoCaptionCount += 1;
 
-      if (altCaption.length >= INSTAGRAM.minAltCaptionLength) {
-        const parsed = parseInstagramPost(
-          post.href,
-          altCaption,
-          post.imgSrc,
-          hashtag,
+        logger.debug(
+          {
+            hashtag,
+            href: post.href,
+          },
+          "skipped instagram post: detail fetch budget exhausted",
         );
-        if (parsed) {
-          parsedPosts.push(parsed);
-        }
+
         continue;
       }
 
-      if (detailFetchCount < INSTAGRAM.maxDetailFetchesPerHashtag) {
-        detailFetchCount += 1;
+      detailFetchCount += 1;
 
-        await delay(INSTAGRAM.detailFetchDelayMs);
+      await delay(INSTAGRAM.detailFetchDelayMs);
 
-        try {
-          const detail = await fetchDetailFromPage(page, post.href);
-          const finalCaption = detail.caption || altCaption;
-          const finalImageUrl = post.imgSrc || detail.imageUrl || "";
-          const parsed = parseInstagramPost(
-            post.href,
-            finalCaption,
-            finalImageUrl,
-            hashtag,
-          );
+      try {
+        const detail = await fetchDetailFromPage(page, post.href);
+        const finalCaption = normalizeText(detail.caption);
 
-          if (parsed) {
-            parsedPosts.push(parsed);
-          }
+        if (!finalCaption) {
+          droppedNoCaptionCount += 1;
 
-          continue;
-        } catch (error) {
-          logger.warn(
+          logger.debug(
             {
               hashtag,
               href: post.href,
-              err: error,
             },
-            "failed to load instagram post detail, falling back to alt text",
+            "skipped instagram post: no caption found on detail page",
+          );
+
+          continue;
+        }
+
+        const finalImageUrl = post.imgSrc || detail.imageUrl || "";
+
+        const postedAtDate = parseInstagramPostedAt(detail.postedAtRaw);
+        const postedAt = toIsoDate(postedAtDate);
+
+        const parsed = parseInstagramPost(
+          post.href,
+          finalCaption,
+          finalImageUrl,
+          hashtag,
+          postedAt,
+        );
+
+        if (parsed) {
+          parsedPosts.push(parsed);
+        } else {
+          droppedNoCaptionCount += 1;
+
+          logger.debug(
+            {
+              hashtag,
+              href: post.href,
+            },
+            "skipped instagram post: caption too short or invalid",
           );
         }
-      }
-
-      const parsed = parseInstagramPost(
-        post.href,
-        altCaption,
-        post.imgSrc,
-        hashtag,
-      );
-
-      if (parsed) {
-        parsedPosts.push(parsed);
-      } else {
+      } catch (error) {
         droppedNoCaptionCount += 1;
+
+        logger.warn(
+          {
+            hashtag,
+            href: post.href,
+            err: error,
+          },
+          "failed to load instagram post detail, skipping post",
+        );
       }
     }
 
@@ -348,6 +373,9 @@ async function scrapeHashtag(
         parsed: parsedPosts.length,
         withLocation: parsedPosts.filter((item) => item.location).length,
         withEventDate: parsedPosts.filter((item) => item.eventDate).length,
+        withPostedAtFallback: parsedPosts.filter(
+          (item) => item.dateSource === "posted_at",
+        ).length,
         detailFetches: detailFetchCount,
         droppedNoCaptionCount,
       },

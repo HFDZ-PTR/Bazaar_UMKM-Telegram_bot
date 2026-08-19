@@ -1,4 +1,4 @@
-// src/scrapers/tiktok.scraper.js
+// src/scrapers/tiktok.scraper.js — versi wajib caption + fallback posted date
 const { CONFIG } = require("../config");
 const {
   createPage,
@@ -11,6 +11,7 @@ const { retryOperation } = require("../utils/retry");
 const dedupService = require("../services/dedup.service");
 const logger = require("../utils/logger");
 const { parseTikTokVideo } = require("../parsers/tiktok.parser");
+const { parseTikTokPostedAt, toIsoDate } = require("../utils/posted-date");
 
 const TIKTOK = {
   hashtagBaseUrl: "https://www.tiktok.com/tag/",
@@ -18,7 +19,7 @@ const TIKTOK = {
   initialDelayMaxMs: 5000,
   scrollSteps: 4,
   waitForCardsTimeoutMs: 15000,
-  maxDetailFetchesPerHashtag: 12,
+  maxDetailFetchesPerHashtag: 20,
   detailFetchDelayMs: 1500,
 };
 
@@ -132,6 +133,11 @@ async function waitForHashtagResults(page) {
   return "timeout";
 }
 
+/**
+ * Ambil caption DAN teks tanggal upload dari halaman detail video.
+ * Teks tanggal muncul dalam format seperti " · 2-6", " · 2d ago",
+ * atau " · 2024-10-2" di dekat info username/statistik video.
+ */
 async function fetchCaptionFromDetailPage(page, href) {
   const url = normalizeTikTokUrl(href);
 
@@ -158,7 +164,7 @@ async function fetchCaptionFromDetailPage(page, href) {
             .querySelector('meta[name="description"]')
             ?.getAttribute("content") || "";
 
-        const selectors = [
+        const captionSelectors = [
           '[data-e2e="browse-video-desc"]',
           '[data-e2e="video-desc"]',
           'div[data-e2e="browse-video-desc"]',
@@ -166,19 +172,50 @@ async function fetchCaptionFromDetailPage(page, href) {
           "h1[data-e2e]",
         ];
 
-        for (const selector of selectors) {
+        let caption = "";
+        for (const selector of captionSelectors) {
           const text = clean(
             document.querySelector(selector)?.textContent || "",
           );
           if (text) {
-            return text;
+            caption = text;
+            break;
           }
         }
 
-        return clean(ogDescription) || clean(metaDescription) || "";
+        if (!caption) {
+          caption = clean(ogDescription) || clean(metaDescription) || "";
+        }
+
+        // Cari span berisi tanggal upload, formatnya:
+        // "· 2-6", "· 2d ago", "· 2024-10-2"
+        function findPostedDateText() {
+          const pattern =
+            /^·\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}|\d+\s*(?:h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months|y|yr|year|years)\s*ago)$/i;
+
+          const spans = Array.from(document.querySelectorAll("span"));
+
+          for (const span of spans) {
+            const text = (span.textContent || "").replace(/\s+/g, " ").trim();
+
+            if (pattern.test(text)) {
+              return text;
+            }
+          }
+
+          return "";
+        }
+
+        return {
+          caption,
+          postedAtRaw: findPostedDateText(),
+        };
       });
 
-      return normalizeText(detail);
+      return {
+        caption: normalizeText(detail.caption),
+        postedAtRaw: detail.postedAtRaw || "",
+      };
     },
     { retries: 1, minTimeout: 1200 },
   );
@@ -287,6 +324,22 @@ async function collectRawCards(page) {
       return unique.join(" ").trim();
     }
 
+    // Cari teks tanggal upload langsung dari grid card (kalau ada),
+    // supaya tidak perlu fetch detail page kalau tidak diperlukan.
+    function findPostedDateTextInItem(item) {
+      const pattern =
+        /^·\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}|\d+\s*(?:h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months|y|yr|year|years)\s*ago)$/i;
+
+      for (const node of item.querySelectorAll("span")) {
+        const text = normalizeCardText(node.textContent);
+        if (pattern.test(text)) {
+          return text;
+        }
+      }
+
+      return "";
+    }
+
     const stateCaptionMap = getStateCaptionMap();
 
     for (const item of document.querySelectorAll(
@@ -320,12 +373,15 @@ async function collectRawCards(page) {
         item.querySelector("img")?.src ||
         "";
 
+      const postedAtRaw = findPostedDateTextInItem(item);
+
       rows.push({
         href,
         videoId,
         authorUsername,
         caption,
         thumbnailUrl,
+        postedAtRaw,
       });
     }
 
@@ -405,7 +461,6 @@ async function scrapeHashtag(
     const rawCardsAll = await collectRawCards(page);
 
     // Batasi berdasarkan MAX_POSTS_PER_SCRAPE dari .env.
-    // remainingBudget adalah sisa kuota pada platform ini.
     const rawCards = rawCardsAll.slice(0, Math.max(0, remainingBudget));
 
     const freshCards = rawCards
@@ -417,7 +472,6 @@ async function scrapeHashtag(
         (card) => card.videoId && !dedupService.has("tiktok", card.videoId),
       );
 
-    // Semua card fresh yang sudah masuk kuota akan diproses.
     const cardsToProcess = freshCards;
 
     logger.info(
@@ -438,36 +492,84 @@ async function scrapeHashtag(
 
     const posts = [];
     let detailFetchCount = 0;
+    let droppedNoCaptionCount = 0;
 
     for (const card of cardsToProcess) {
       try {
         const enrichedCard = { ...card };
+        const initialCaption = normalizeText(enrichedCard.caption);
 
+        // Ambil tanggal upload dari grid dulu (kalau ada), supaya kalau
+        // detail fetch gagal, kita masih punya fallback tanggal.
+        let postedAtRaw = enrichedCard.postedAtRaw || "";
+
+        // Kalau caption dari grid kosong, coba ambil dari halaman detail.
+        // Detail fetch juga dipakai untuk melengkapi tanggal upload kalau
+        // belum ketemu dari grid.
         if (
-          !normalizeText(enrichedCard.caption) &&
+          (!initialCaption || !postedAtRaw) &&
           detailFetchCount < TIKTOK.maxDetailFetchesPerHashtag
         ) {
           detailFetchCount += 1;
 
           await delay(TIKTOK.detailFetchDelayMs);
 
-          const detailCaption = await fetchCaptionFromDetailPage(
+          const detail = await fetchCaptionFromDetailPage(
             page,
             enrichedCard.href,
           );
 
-          if (detailCaption) {
-            enrichedCard.caption = detailCaption;
-          } else {
-            enrichedCard.captionFetchAttempted = true;
+          if (detail.caption) {
+            enrichedCard.caption = detail.caption;
+          }
+
+          if (!postedAtRaw && detail.postedAtRaw) {
+            postedAtRaw = detail.postedAtRaw;
           }
         }
 
-        const parsed = parseTikTokVideo(enrichedCard);
+        // Kalau caption tetap kosong setelah detail fetch, lewati video ini.
+        if (!normalizeText(enrichedCard.caption)) {
+          droppedNoCaptionCount += 1;
+
+          logger.debug(
+            {
+              hashtag,
+              videoId: card.videoId,
+              href: card.href,
+            },
+            "skipped tiktok video: no caption found",
+          );
+
+          continue;
+        }
+
+        const postedAtDate = parseTikTokPostedAt(postedAtRaw);
+        const postedAt = toIsoDate(postedAtDate);
+
+        const parsed = parseTikTokVideo({
+          ...enrichedCard,
+          postedAt,
+          sourceHashtag: hashtag,
+        });
+
         if (parsed) {
           posts.push(parsed);
+        } else {
+          droppedNoCaptionCount += 1;
+
+          logger.debug(
+            {
+              hashtag,
+              videoId: card.videoId,
+              href: card.href,
+            },
+            "skipped tiktok video: caption too short or invalid",
+          );
         }
       } catch (error) {
+        droppedNoCaptionCount += 1;
+
         logger.warn(
           {
             hashtag,
@@ -485,7 +587,12 @@ async function scrapeHashtag(
         platform: "tiktok",
         hashtag,
         parsed: posts.length,
+        withEventDate: posts.filter((item) => item.eventDate).length,
+        withPostedAtFallback: posts.filter(
+          (item) => item.dateSource === "posted_at",
+        ).length,
         detailFetches: detailFetchCount,
+        droppedNoCaptionCount,
       },
       "tiktok hashtag parsed",
     );

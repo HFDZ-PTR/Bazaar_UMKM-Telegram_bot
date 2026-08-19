@@ -95,6 +95,14 @@ const envSchema = z.object({
   HASHTAGS_PER_CYCLE: z.coerce.number().int().positive().default(2),
   MAX_POSTS_PER_SCRAPE: z.coerce.number().int().positive().default(3),
   SCRAPE_INTERVAL: z.string().optional().default("4h"),
+
+  TELEGRAM_QUEUE_INTERVAL_MS: z.coerce.number().int().positive().default(1100),
+
+  DEBUG_HTML_DUMP: z
+    .string()
+    .optional()
+    .default("0")
+    .transform((value) => value.trim() === "1"),
 });
 
 const env = envSchema.parse(process.env);
@@ -151,7 +159,9 @@ const CONFIG = {
   scraperNetworkTimeoutMs: SCRAPER_DEFAULTS.networkTimeoutMs,
   maxPostsPerScrape: env.MAX_POSTS_PER_SCRAPE,
 
-  telegramQueueIntervalMs: TELEGRAM_DEFAULTS.queueIntervalMs,
+  debugHtmlDump: env.DEBUG_HTML_DUMP,
+
+  telegramQueueIntervalMs: env.TELEGRAM_QUEUE_INTERVAL_MS,
   telegramQueueIntervalCap: TELEGRAM_DEFAULTS.queueIntervalCap,
   telegramQueueConcurrency: TELEGRAM_DEFAULTS.queueConcurrency,
   telegramRetryAttempts: TELEGRAM_DEFAULTS.retryAttempts,
@@ -164,6 +174,8 @@ const eventSchema = z.object({
   title: z.string().min(1),
   date: z.string().nullable().optional(),
   eventDate: z.string().nullable().optional(),
+  postedAt: z.string().nullable().optional(),
+  dateSource: z.string().nullable().optional(),
   location: z.string().optional().default(""),
   region: z.string().optional().default("Lainnya"),
   organizer: z.string().optional().default(""),

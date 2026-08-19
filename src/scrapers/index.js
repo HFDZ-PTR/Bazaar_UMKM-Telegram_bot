@@ -1,4 +1,4 @@
-// src/scrapers/index.js
+// src/scrapers/index.js — dengan validasi description wajib ada
 const logger = require("../utils/logger");
 const { eventSchema } = require("../config");
 const { appendError, appendEvent } = require("../services/storage.service");
@@ -6,6 +6,11 @@ const dedupService = require("../services/dedup.service");
 const telegramService = require("../services/telegram.service");
 const { scrapeInstagram } = require("./instagram.scraper");
 const { scrapeTikTok } = require("./tiktok.scraper");
+
+// Lapisan validasi kedua. Parser sudah menolak caption kosong,
+// tapi ini jaga-jaga kalau ada event yang lolos dari parser
+// (misal event dibuat manual lewat jalur lain di masa depan).
+const MIN_DESCRIPTION_LENGTH = 20;
 
 async function processEvent(event) {
   const parsed = eventSchema.safeParse(event);
@@ -24,6 +29,25 @@ async function processEvent(event) {
   }
 
   const item = parsed.data;
+
+  // Validasi wajib: description harus ada dan cukup panjang.
+  if (
+    !item.description ||
+    item.description.trim().length < MIN_DESCRIPTION_LENGTH
+  ) {
+    logger.debug(
+      {
+        platform: item.platform,
+        postId: item.postId,
+        sourceHashtag: item.sourceHashtag || "",
+        descriptionLength: item.description?.trim().length || 0,
+      },
+      "skipped event: missing or too-short description",
+    );
+
+    return false;
+  }
+
   const isNew = await dedupService.isNew(item.platform, item.postId);
 
   if (!isNew) {
