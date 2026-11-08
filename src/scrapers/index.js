@@ -1,4 +1,4 @@
-// src/scrapers/index.js — dengan validasi description wajib ada
+// src/scrapers/index.js
 const logger = require("../utils/logger");
 const { eventSchema } = require("../config");
 const { appendError, appendEvent } = require("../services/storage.service");
@@ -7,9 +7,6 @@ const telegramService = require("../services/telegram.service");
 const { scrapeInstagram } = require("./instagram.scraper");
 const { scrapeTikTok } = require("./tiktok.scraper");
 
-// Lapisan validasi kedua. Parser sudah menolak caption kosong,
-// tapi ini jaga-jaga kalau ada event yang lolos dari parser
-// (misal event dibuat manual lewat jalur lain di masa depan).
 const MIN_DESCRIPTION_LENGTH = 20;
 
 async function processEvent(event) {
@@ -30,7 +27,6 @@ async function processEvent(event) {
 
   const item = parsed.data;
 
-  // Validasi wajib: description harus ada dan cukup panjang.
   if (
     !item.description ||
     item.description.trim().length < MIN_DESCRIPTION_LENGTH
@@ -65,8 +61,6 @@ async function processEvent(event) {
 
   const result = await appendEvent(item);
 
-  // appendEvent juga mengecek duplicate content.
-  // Jangan mengirim Telegram jika event tidak benar-benar diinsert.
   if (!result?.inserted) {
     logger.debug(
       {

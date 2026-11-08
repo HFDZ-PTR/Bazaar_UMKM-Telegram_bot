@@ -24,9 +24,6 @@ function normalizeEventRecord(event) {
   const parsedEventDate = parseEventDateString(event.eventDate);
   const eventDate = parsedEventDate ? toIsoDateString(parsedEventDate) : null;
 
-  // postedAt (tanggal upload asli) juga dinormalisasi lewat parser yang
-  // sama, supaya formatnya konsisten YYYY-MM-DD kalau ternyata sudah
-  // berupa string tanggal valid.
   const parsedPostedAt = parseEventDateString(event.postedAt);
   const postedAt = parsedPostedAt
     ? toIsoDateString(parsedPostedAt)
@@ -43,9 +40,6 @@ function normalizeEventRecord(event) {
     location: event.location,
   });
 
-  // dateSource: penanda asal nilai kolom "date".
-  // Kalau tidak dikirim oleh parser, tentukan otomatis berdasarkan
-  // ketersediaan eventDate vs postedAt.
   const dateSource =
     event.dateSource || (eventDate ? "caption" : postedAt ? "posted_at" : null);
 
@@ -109,7 +103,6 @@ const insertEventStmt = db.prepare(`
 async function appendEvent(event) {
   const record = normalizeEventRecord(event);
 
-  // Cek duplikat lengkap: identitas + konten
   const dupCheck = await dedupService.checkDuplicate(
     record.platform,
     record.postId,
@@ -117,7 +110,6 @@ async function appendEvent(event) {
   );
 
   if (dupCheck.isDuplicate) {
-    // Cari ID event yang sudah ada (untuk logging / referensi)
     let existingId = record.id;
 
     if (dupCheck.reason === "content" && record.contentFingerprint) {

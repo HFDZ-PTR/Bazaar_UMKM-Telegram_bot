@@ -1,4 +1,4 @@
-// src/scrapers/instagram.scraper.js — versi wajib caption + fallback posted date
+// src/scrapers/instagram.scraper.js
 const { CONFIG } = require("../config");
 const {
   createPage,
@@ -17,9 +17,6 @@ const { parseInstagramPostedAt, toIsoDate } = require("../utils/posted-date");
 const INSTAGRAM = {
   hashtagBaseUrl: "https://www.instagram.com/explore/tags/",
   postBaseUrl: "https://www.instagram.com",
-  // Alt text TIDAK dianggap caption asli. Nilai ini hanya dipakai untuk
-  // decision awal apakah post ini "kemungkinan" punya caption, tapi caption
-  // FINAL selalu diambil dari halaman detail post.
   maxDetailFetchesPerHashtag: 20,
   detailFetchDelayMs: 1200,
 };
@@ -46,7 +43,7 @@ async function extractPostCaption(page) {
 
   const normalizedOg = normalizeText(ogDescription);
   if (normalizedOg) {
-    const quoted = normalizedOg.match(/["“]([^"”]+)["”]/);
+    const quoted = normalizedOg.match(/[""]([^""]+)[""]/);
     if (quoted?.[1]) {
       return normalizeText(quoted[1]);
     }
@@ -54,8 +51,8 @@ async function extractPostCaption(page) {
     const colonIndex = normalizedOg.indexOf(":");
     if (colonIndex >= 0) {
       const afterColon = normalizeText(normalizedOg.slice(colonIndex + 1))
-        .replace(/^['"“”]+/, "")
-        .replace(/['"“”]+$/, "")
+        .replace(/^['"""]+/, "")
+        .replace(/['"""]+$/, "")
         .replace(/\s+on Instagram.*$/i, "");
 
       if (afterColon) {
@@ -210,11 +207,8 @@ async function dumpHtmlState(page, hashtag, state) {
   }
 }
 
-async function scrapeHashtag(
-  page,
-  hashtag,
-  remainingBudget = CONFIG.maxPostsPerScrape,
-) {
+async function scrapeHashtag(page, hashtag, _remainingBudget) {
+  const PER_HASHTAG_LIMIT = CONFIG.maxPostsPerScrape;
   const url = `${INSTAGRAM.hashtagBaseUrl}${encodeURIComponent(hashtag)}/`;
 
   logger.info({ platform: "instagram", hashtag, url }, "scraping hashtag");
@@ -257,8 +251,7 @@ async function scrapeHashtag(
 
     const rawPostsAll = await collectRawPosts(page);
 
-    // Batasi berdasarkan MAX_POSTS_PER_SCRAPE dari .env.
-    const rawPosts = rawPostsAll.slice(0, Math.max(0, remainingBudget));
+    const rawPosts = rawPostsAll.slice(0, PER_HASHTAG_LIMIT);
 
     const freshPosts = rawPosts.filter((post) => {
       return !dedupService.has("instagram", extractPostId(post.href));
@@ -273,6 +266,7 @@ async function scrapeHashtag(
         totalFound: rawPosts.length,
         freshFound: freshPosts.length,
         processing: postsToProcess.length,
+        perHashtagLimit: PER_HASHTAG_LIMIT,
       },
       "instagram posts collected",
     );
@@ -287,9 +281,6 @@ async function scrapeHashtag(
     let droppedNoCaptionCount = 0;
 
     for (const post of postsToProcess) {
-      // Caption FINAL selalu diambil dari halaman detail post.
-      // Alt text TIDAK dipakai sebagai caption karena hanya deskripsi gambar,
-      // bukan caption asli yang ditulis pengunggah.
       if (detailFetchCount >= INSTAGRAM.maxDetailFetchesPerHashtag) {
         droppedNoCaptionCount += 1;
 
@@ -398,12 +389,7 @@ async function scrapeInstagram(selectedHashtags = CONFIG.instagramHashtags) {
 
   try {
     for (const hashtag of hashtags) {
-      const remainingBudget = CONFIG.maxPostsPerScrape - events.length;
-      if (remainingBudget <= 0) {
-        break;
-      }
-
-      const posts = await scrapeHashtag(page, hashtag, remainingBudget);
+      const posts = await scrapeHashtag(page, hashtag, null);
 
       events.push(
         ...posts.map((post) => ({
@@ -411,25 +397,18 @@ async function scrapeInstagram(selectedHashtags = CONFIG.instagramHashtags) {
           sourceHashtag: hashtag,
         })),
       );
-
-      if (events.length >= CONFIG.maxPostsPerScrape) {
-        logger.info(
-          { limit: CONFIG.maxPostsPerScrape },
-          "instagram scrape limit reached",
-        );
-        break;
-      }
     }
 
     logger.info(
       {
         hashtags,
         totalEvents: events.length,
+        perHashtagLimit: CONFIG.maxPostsPerScrape,
       },
       "instagram scrape finished",
     );
 
-    return events.slice(0, CONFIG.maxPostsPerScrape);
+    return events;
   } finally {
     await closePage(page, "instagram");
   }

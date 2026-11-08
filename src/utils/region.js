@@ -1,6 +1,4 @@
 // src/utils/region.js
-// Ekstrak wilayah (provinsi/region) dari lokasi + caption
-
 
 const KNOWN_REGIONS = [
   "Jabodetabek",
@@ -17,9 +15,7 @@ const KNOWN_REGIONS = [
   "Lainnya",
 ];
 
-
 const UNKNOWN_REGION = "Lainnya";
-
 
 // Mapping kota/wilayah ke region
 const CITY_TO_REGION = {
@@ -47,7 +43,7 @@ const CITY_TO_REGION = {
   cilegon: "Banten",
   pandeglang: "Banten",
   lebak: "Banten",
-  
+
   // Jawa Tengah
   semarang: "Jawa Tengah",
   solo: "Jawa Tengah",
@@ -78,7 +74,7 @@ const CITY_TO_REGION = {
   batang: "Jawa Tengah",
   kendal: "Jawa Tengah",
   temanggung: "Jawa Tengah",
-  
+
   // Jawa Timur
   surabaya: "Jawa Timur",
   malang: "Jawa Timur",
@@ -107,7 +103,7 @@ const CITY_TO_REGION = {
   sampang: "Jawa Timur",
   sumenep: "Jawa Timur",
   pamekasan: "Jawa Timur",
-  
+
   // Bali & Nusa Tenggara
   bali: "Bali & Nusa Tenggara",
   denpasar: "Bali & Nusa Tenggara",
@@ -117,7 +113,7 @@ const CITY_TO_REGION = {
   flores: "Bali & Nusa Tenggara",
   kupang: "Bali & Nusa Tenggara",
   nusa: "Bali & Nusa Tenggara",
-  
+
   // Sumatera
   medan: "Sumatera",
   aceh: "Sumatera",
@@ -138,7 +134,7 @@ const CITY_TO_REGION = {
   padangpanjang: "Sumatera",
   payakumbuh: "Sumatera",
   pariaman: "Sumatera",
-  
+
   // Kalimantan
   pontianak: "Kalimantan",
   banjarmasin: "Kalimantan",
@@ -159,7 +155,7 @@ const CITY_TO_REGION = {
   mempah: "Kalimantan",
   ngabang: "Kalimantan",
   Bengkayang: "Kalimantan",
-  
+
   // Sulawesi
   makassar: "Sulawesi",
   manado: "Sulawesi",
@@ -205,7 +201,7 @@ const CITY_TO_REGION = {
   ampana: "Sulawesi",
   luwuk: "Sulawesi",
   banggai: "Sulawesi",
-  
+
   // Papua & Maluku
   papua: "Papua & Maluku",
   jayapura: "Papua & Maluku",
@@ -262,7 +258,6 @@ const CITY_TO_REGION = {
   malaka: "Papua & Maluku",
 };
 
-
 function normalizeText(text = "") {
   return String(text || "")
     .toLowerCase()
@@ -271,25 +266,21 @@ function normalizeText(text = "") {
     .trim();
 }
 
-
 function extractRegion(location = "", caption = "", hashtag = "") {
   const text = normalizeText(`${location} ${caption} ${hashtag || ""}`);
-  
-  // Cari keyword kota/wilayah yang known
+
   for (const [city, region] of Object.entries(CITY_TO_REGION)) {
     if (text.includes(city)) {
       return region;
     }
   }
-  
+
   return UNKNOWN_REGION;
 }
-
 
 function listKnownRegions() {
   return KNOWN_REGIONS;
 }
-
 
 module.exports = {
   extractRegion,

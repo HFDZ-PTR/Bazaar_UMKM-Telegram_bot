@@ -1,4 +1,4 @@
-// src/scrapers/tiktok.scraper.js — versi wajib caption + fallback posted date
+// src/scrapers/tiktok.scraper.js
 const { CONFIG } = require("../config");
 const {
   createPage,
@@ -133,11 +133,6 @@ async function waitForHashtagResults(page) {
   return "timeout";
 }
 
-/**
- * Ambil caption DAN teks tanggal upload dari halaman detail video.
- * Teks tanggal muncul dalam format seperti " · 2-6", " · 2d ago",
- * atau " · 2024-10-2" di dekat info username/statistik video.
- */
 async function fetchCaptionFromDetailPage(page, href) {
   const url = normalizeTikTokUrl(href);
 
@@ -187,8 +182,6 @@ async function fetchCaptionFromDetailPage(page, href) {
           caption = clean(ogDescription) || clean(metaDescription) || "";
         }
 
-        // Cari span berisi tanggal upload, formatnya:
-        // "· 2-6", "· 2d ago", "· 2024-10-2"
         function findPostedDateText() {
           const pattern =
             /^·\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}|\d+\s*(?:h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months|y|yr|year|years)\s*ago)$/i;
@@ -324,8 +317,6 @@ async function collectRawCards(page) {
       return unique.join(" ").trim();
     }
 
-    // Cari teks tanggal upload langsung dari grid card (kalau ada),
-    // supaya tidak perlu fetch detail page kalau tidak diperlukan.
     function findPostedDateTextInItem(item) {
       const pattern =
         /^·\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}|\d+\s*(?:h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months|y|yr|year|years)\s*ago)$/i;
@@ -389,11 +380,8 @@ async function collectRawCards(page) {
   });
 }
 
-async function scrapeHashtag(
-  page,
-  hashtag,
-  remainingBudget = CONFIG.maxPostsPerScrape,
-) {
+async function scrapeHashtag(page, hashtag, _remainingBudget) {
+  const PER_HASHTAG_LIMIT = CONFIG.maxPostsPerScrape;
   const url = `${TIKTOK.hashtagBaseUrl}${encodeURIComponent(hashtag)}`;
 
   logger.info({ platform: "tiktok", hashtag, url }, "scraping hashtag");
@@ -460,8 +448,7 @@ async function scrapeHashtag(
 
     const rawCardsAll = await collectRawCards(page);
 
-    // Batasi berdasarkan MAX_POSTS_PER_SCRAPE dari .env.
-    const rawCards = rawCardsAll.slice(0, Math.max(0, remainingBudget));
+    const rawCards = rawCardsAll.slice(0, PER_HASHTAG_LIMIT);
 
     const freshCards = rawCards
       .map((card) => ({
@@ -481,6 +468,7 @@ async function scrapeHashtag(
         totalFound: rawCards.length,
         freshFound: freshCards.length,
         processing: cardsToProcess.length,
+        perHashtagLimit: PER_HASHTAG_LIMIT,
       },
       "tiktok cards collected",
     );
@@ -498,14 +486,8 @@ async function scrapeHashtag(
       try {
         const enrichedCard = { ...card };
         const initialCaption = normalizeText(enrichedCard.caption);
-
-        // Ambil tanggal upload dari grid dulu (kalau ada), supaya kalau
-        // detail fetch gagal, kita masih punya fallback tanggal.
         let postedAtRaw = enrichedCard.postedAtRaw || "";
 
-        // Kalau caption dari grid kosong, coba ambil dari halaman detail.
-        // Detail fetch juga dipakai untuk melengkapi tanggal upload kalau
-        // belum ketemu dari grid.
         if (
           (!initialCaption || !postedAtRaw) &&
           detailFetchCount < TIKTOK.maxDetailFetchesPerHashtag
@@ -528,7 +510,6 @@ async function scrapeHashtag(
           }
         }
 
-        // Kalau caption tetap kosong setelah detail fetch, lewati video ini.
         if (!normalizeText(enrichedCard.caption)) {
           droppedNoCaptionCount += 1;
 
@@ -613,12 +594,7 @@ async function scrapeTikTok(selectedHashtags = CONFIG.tiktokHashtags) {
 
   try {
     for (const hashtag of hashtags) {
-      const remainingBudget = CONFIG.maxPostsPerScrape - events.length;
-      if (remainingBudget <= 0) {
-        break;
-      }
-
-      const posts = await scrapeHashtag(page, hashtag, remainingBudget);
+      const posts = await scrapeHashtag(page, hashtag, null);
 
       events.push(
         ...posts.map((post) => ({
@@ -626,25 +602,18 @@ async function scrapeTikTok(selectedHashtags = CONFIG.tiktokHashtags) {
           sourceHashtag: hashtag,
         })),
       );
-
-      if (events.length >= CONFIG.maxPostsPerScrape) {
-        logger.info(
-          { limit: CONFIG.maxPostsPerScrape },
-          "tiktok scrape limit reached",
-        );
-        break;
-      }
     }
 
     logger.info(
       {
         hashtags,
         totalEvents: events.length,
+        perHashtagLimit: CONFIG.maxPostsPerScrape,
       },
       "tiktok scrape finished",
     );
 
-    return events.slice(0, CONFIG.maxPostsPerScrape);
+    return events;
   } finally {
     await closePage(page, "tiktok");
   }

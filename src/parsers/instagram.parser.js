@@ -1,4 +1,4 @@
-// src/parsers/instagram.parser.js — versi wajib caption + fallback posted date
+// src/parsers/instagram.parser.js
 const { extractEventDateFromText } = require("../utils/date");
 const { extractRegion } = require("../utils/region");
 

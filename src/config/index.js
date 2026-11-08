@@ -1,4 +1,4 @@
-// src/config/index.js (dengan support multiline .env)
+// src/config/index.js
 const path = require("path");
 const dotenv = require("dotenv");
 const { z } = require("zod");
@@ -9,10 +9,7 @@ const {
   TELEGRAM_DEFAULTS,
 } = require("./constants");
 
-// Enable multiline support dengan opsi terbaru dari dotenv
 dotenv.config({
-  // Opsi ini membuat dotenv bisa parse string dengan newline dan backslash
-  // Namun perlu dotenv versi 16+ yang support multiline
   multiline: true,
 });
 
@@ -51,7 +48,7 @@ function parseDurationToMinutes(value) {
 
 function parseTagList(value) {
   const tags = String(value || "")
-    .split(/[,\n]/) // Split by comma OR newline
+    .split(/[,\n]/)
     .map((tag) => tag.trim().toLowerCase().replace(/^#/, "").replace(/^\\/, ""))
     .filter(Boolean);
 
